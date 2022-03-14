@@ -38,7 +38,7 @@ def dask_array_builder(client, value, builder, **kw):
         client.persist(obj_id)
         return np.array([[int(obj_id)]])
 
-    _ = Client(kw['dask_scheduler'])  #enforce distributed scheduling
+    _ = Client(kw['dask_scheduler'])  # enforce distributed scheduling
     blocks = value.map_blocks(put_partition, dtype=int).compute().flatten()
     return make_global_tensor(client, blocks)
 
@@ -50,7 +50,7 @@ def dask_dataframe_builder(client, value, builder, **kw):
         client.persist(obj_id)
         return pd.DataFrame([{'no': partition_info['number'], 'id': int(obj_id)}])
 
-    _ = Client(kw['dask_scheduler'])  #enforce distributed scheduling
+    _ = Client(kw['dask_scheduler'])  # enforce distributed scheduling
     res = value.map_partitions(put_partition, meta={'no': int, 'id': int}).compute()
     res = res.set_index('no')
     blocks = [res.loc[i] for i in range(len(res))]
@@ -83,7 +83,10 @@ def dask_array_resolver(obj, resolver, **kw):
             # we require the 1-on-1 alignment of vineyard instances and dask workers.
             # vineyard_sockets maps vineyard instance_ids into ipc_sockets, while
             # dask_workers maps vineyard instance_ids into names of dask workers.
-            dask_client.submit(get_partition, ts.meta.id, workers={kw['dask_workers'][instance_id]}))
+            dask_client.submit(
+                get_partition, ts.meta.id, workers={kw['dask_workers'][instance_id]}
+            )
+        )
 
     arrays = dask_client.gather(futures)
     if with_index:
@@ -119,7 +122,10 @@ def dask_dataframe_resolver(obj, resolver, **kw):
             # we require the 1-on-1 alignment of vineyard instances and dask workers.
             # vineyard_sockets maps vineyard instance_ids into ipc_sockets, while
             # dask_workers maps vineyard instance_ids into names of dask workers.
-            dask_client.submit(get_partition, df.meta.id, workers={kw['dask_workers'][instance_id]}))
+            dask_client.submit(
+                get_partition, df.meta.id, workers={kw['dask_workers'][instance_id]}
+            )
+        )
 
     dfs = dask_client.gather(futures)
     return dd.concat(dfs, axis=0)

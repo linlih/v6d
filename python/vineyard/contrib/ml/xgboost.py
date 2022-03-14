@@ -17,9 +17,11 @@
 #
 
 import numpy as np
+
 import xgboost as xgb
 
-from vineyard.core.resolver import resolver_context, default_resolver_context
+from vineyard.core.resolver import default_resolver_context
+from vineyard.core.resolver import resolver_context
 
 
 def xgb_builder(client, value, builder, **kw):

@@ -26,8 +26,8 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "arrow/util/config.h"
-#include "arrow/util/key_value_metadata.h"
+#include "arrow/api.h"
+#include "arrow/io/api.h"
 
 #include "grape/worker/comm_spec.h"
 
@@ -80,7 +80,6 @@ inline Status ReadRecordBatchesFromVineyardStream(
     {
       std::lock_guard<std::mutex> scoped_lock(mutex_for_results);
       for (auto const& batch : read_batches) {
-        VLOG(10) << "recordbatch from stream: " << batch->schema()->ToString();
         batches.emplace_back(batch);
       }
     }

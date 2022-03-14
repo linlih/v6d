@@ -24,10 +24,10 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "arrow/builder.h"
+#include "arrow/api.h"
 #include "arrow/compute/api.h"
-#include "arrow/util/config.h"
-#include "arrow/util/key_value_metadata.h"
+#include "arrow/io/api.h"
+#include "arrow/ipc/api.h"
 #include "boost/leaf.hpp"
 
 #include "grape/serialization/in_archive.h"
@@ -673,12 +673,16 @@ inline boost::leaf::result<std::shared_ptr<arrow::Schema>> TypeLoosen(
       }
     }
   }
+  if (field_num == -1) {
+    RETURN_GS_ERROR(ErrorCode::kInvalidOperationError,
+                    "No table available for normalizing schemas");
+  }
   if (field_num == 0) {
     RETURN_GS_ERROR(ErrorCode::kInvalidOperationError, "Every schema is empty");
   }
   // Perform type lossen.
   // Date32 -> int32
-  // Timestamp(s) -> int64 -> double -> utf8   binary (not supported)
+  // Timestamp -> int64 -> double -> utf8   binary (not supported)
 
   // Timestamp value are stored as as number of seconds, milliseconds,
   // microseconds or nanoseconds since UNIX epoch.
@@ -705,7 +709,7 @@ inline boost::leaf::result<std::shared_ptr<arrow::Schema>> TypeLoosen(
     if (res->Equals(arrow::date64())) {
       res = arrow::int64();
     }
-    if (res->Equals(arrow::timestamp(arrow::TimeUnit::SECOND))) {
+    if (res->id() == arrow::Type::TIMESTAMP) {
       res = arrow::int64();
     }
     if (res->Equals(arrow::int64())) {
@@ -799,30 +803,21 @@ inline boost::leaf::result<std::shared_ptr<arrow::Table>> CastTableToSchema(
       std::vector<std::shared_ptr<arrow::Array>> chunks;
       for (int64_t j = 0; j < col->num_chunks(); ++j) {
         auto array = col->chunk(j);
-        if (from_type->Equals(arrow::utf8()) &&
-            to_type->Equals(arrow::large_utf8())) {
+        if (arrow::compute::CanCast(*from_type, *to_type)) {
+          BOOST_LEAF_AUTO(new_array, GeneralCast(array, to_type));
+          chunks.push_back(new_array);
+        } else if (from_type->Equals(arrow::utf8()) &&
+                   to_type->Equals(arrow::large_utf8())) {
           BOOST_LEAF_AUTO(new_array, CastStringToBigString(array, to_type));
           chunks.push_back(new_array);
         } else if (from_type->Equals(arrow::null())) {
           BOOST_LEAF_AUTO(new_array, CastNullToOthers(array, to_type));
-          chunks.push_back(new_array);
-#if defined(ARROW_VERSION) && ARROW_VERSION < 1000000
-        } else {
-          BOOST_LEAF_AUTO(new_array, GeneralCast(array, to_type));
-          chunks.push_back(new_array);
-        }
-#else
-        } else if (arrow::compute::CanCast(*from_type, *to_type)) {
-          BOOST_LEAF_AUTO(new_array, GeneralCast(array, to_type));
           chunks.push_back(new_array);
         } else {
           RETURN_GS_ERROR(ErrorCode::kDataTypeError,
                           "Unsupported cast: To type: " + to_type->ToString() +
                               "; Origin type: " + from_type->ToString());
         }
-#endif
-        VLOG(10) << "Cast " << from_type->ToString() << " To "
-                 << to_type->ToString();
       }
       auto chunk_array = std::make_shared<arrow::ChunkedArray>(chunks, to_type);
       new_columns.push_back(chunk_array);

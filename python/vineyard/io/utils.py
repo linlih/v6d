@@ -19,17 +19,22 @@
 import concurrent
 import concurrent.futures
 import json
-import traceback
 import os
+import traceback
 
 from vineyard._C import ObjectID
 
 
 def report_status(status, content):
-    print(json.dumps({
-        'type': status,
-        'content': content,
-    }), flush=True)
+    print(
+        json.dumps(
+            {
+                'type': status,
+                'content': content,
+            }
+        ),
+        flush=True,
+    )
 
 
 def report_error(content):
@@ -50,10 +55,44 @@ def expand_full_path(path):
     return os.path.expanduser(os.path.expandvars(path))
 
 
+def parse_readable_size(size):
+    '''Parse human-readable size. Note that any extra character that follows a
+    valid sequence will be ignored.
+
+    You can express memory as a plain integer or as a fixed-point number
+    using one of these suffixes: E, P, T, G, M, K. You can also use the
+    power-of-two equivalents: Ei, Pi, Ti, Gi, Mi, Ki.
+
+    For example, the following represent roughly the same value:
+
+    .. code:: python
+
+        128974848, 129k, 129M, 123Mi, 1G, 10Gi, ...
+    '''
+    if isinstance(size, (int, float)):
+        return int(size)
+
+    ns, cs = '', ''
+    for c in size:
+        if c.isdigit():
+            ns += c
+        else:
+            cs = c.upper()
+            break
+    ratios = {
+        'K': 2**10,
+        'M': 2**20,
+        'G': 2**30,
+        'T': 2**40,
+        'P': 2**50,
+        'E': 2**60,
+    }
+    return int(ns) * ratios.get(cs, 1)
+
+
 class BaseStreamExecutor:
     def execute(self):
-        """
-        """
+        """ """
 
 
 class ThreadStreamExecutor:
@@ -65,6 +104,10 @@ class ThreadStreamExecutor:
         def start_to_execute(executor: BaseStreamExecutor):
             return executor.execute()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self._parallism) as executor:
-            results = [executor.submit(start_to_execute, exec) for exec in self._executors]
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._parallism
+        ) as executor:
+            results = [
+                executor.submit(start_to_execute, exec) for exec in self._executors
+            ]
             return [future.result() for future in results]

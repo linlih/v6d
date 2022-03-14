@@ -29,7 +29,8 @@ from airflow.utils import timezone
 from airflow.utils.state import State
 from airflow.utils.types import DagRunType
 
-from .test_base import TestPythonBase, DEFAULT_DATE
+from .test_base import DEFAULT_DATE
+from .test_base import TestPythonBase
 
 
 class TestAirflowPandasDag(TestPythonBase):

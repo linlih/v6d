@@ -24,7 +24,8 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
-#include "arrow/buffer.h"
+#include "arrow/api.h"
+#include "arrow/io/api.h"
 
 #include "common/util/boost.h"
 #include "common/util/json.h"
@@ -345,7 +346,7 @@ class ObjectMeta {
                    std::map<std::string, Value>& values) const {
     json tree;
     GetKeyValue(key, tree);
-    for (auto const& kv : json::iterator_wrapper(tree)) {
+    for (auto const& kv : tree.items()) {
       values.emplace(kv.key(), kv.value().get<Value>());
     }
   }
@@ -364,7 +365,7 @@ class ObjectMeta {
                    std::map<json, Value>& values) const {
     json tree;
     GetKeyValue(key, tree);
-    for (auto const& kv : json::iterator_wrapper(tree)) {
+    for (auto const& kv : tree.items()) {
       values.emplace(json::parse(kv.key()), kv.value().get<Value>());
     }
   }
@@ -383,7 +384,7 @@ class ObjectMeta {
                    std::unordered_map<std::string, Value>& values) const {
     json tree;
     GetKeyValue(key, tree);
-    for (auto const& kv : json::iterator_wrapper(tree)) {
+    for (auto const& kv : tree.items()) {
       values.emplace(kv.key(), kv.value().get<Value>());
     }
   }
@@ -402,7 +403,7 @@ class ObjectMeta {
                    std::unordered_map<json, Value>& values) const {
     json tree;
     GetKeyValue(key, tree);
-    for (auto const& kv : json::iterator_wrapper(tree)) {
+    for (auto const& kv : tree.items()) {
       values.emplace(json::parse(kv.key()), kv.value().get<Value>());
     }
   }
@@ -523,8 +524,8 @@ class ObjectMeta {
 
   using const_iterator =
       nlohmann::detail::iteration_proxy_value<json::const_iterator>;
-  const_iterator begin() const { return json::iterator_wrapper(meta_).begin(); }
-  const_iterator end() const { return json::iterator_wrapper(meta_).end(); }
+  const_iterator begin() const { return meta_.items().begin(); }
+  const_iterator end() const { return meta_.items().end(); }
 
   const std::shared_ptr<BufferSet>& GetBufferSet() const;
 

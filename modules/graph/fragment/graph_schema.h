@@ -28,6 +28,7 @@ limitations under the License.
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/io/api.h"
 #include "boost/leaf.hpp"
 
 #include "common/util/json.h"
@@ -190,7 +191,7 @@ class PropertyGraphSchema {
   std::vector<std::pair<std::string, std::string>> GetEdgePropertyListByLabel(
       LabelId label_id) const;
 
-  bool Validate();
+  bool Validate(std::string& message);
 
   const std::map<std::string, int>& GetPropertyNameToIDMapping() const;
 

@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.3)
 
 set(VINEYARD_MAJOR_VERSION 0)
 set(VINEYARD_MINOR_VERSION 3)
-set(VINEYARD_PATCH_VERSION 16)
+set(VINEYARD_PATCH_VERSION 19)
 set(VINEYARD_VERSION ${VINEYARD_MAJOR_VERSION}.${VINEYARD_MINOR_VERSION}.${VINEYARD_PATCH_VERSION})
 
 message(STATUS "Configuring and building vineyard version '${VINEYARD_VERSION}'.")
@@ -21,6 +21,7 @@ option(USE_STATIC_BOOST_LIBS "Build with static-linked boost libraries" OFF)
 option(USE_EXTERNAL_ETCD_LIBS "Build with external etcd-cpp-apiv3 library rather than the submodule one" ON)
 option(USE_EXTERNAL_TBB_LIBS "Build with external tbb library rather than the submodule one" ON)
 option(USE_ASAN "Using address sanitizer to check memory accessing" OFF)
+option(USE_INCLUDE_WHAT_YOU_USE "Simply the intra-module dependencies with iwyu" OFF)
 option(USE_JSON_DIAGNOSTICS "Using json diagnostics to check the validity of metadata" OFF)
 
 option(BUILD_VINEYARD_SERVER "Build vineyard's server" ON)
@@ -75,6 +76,15 @@ else()
         COMMAND echo "ccache not found."
     )
 endif(ccache_EXECUTABLE)
+
+if(USE_INCLUDE_WHAT_YOU_USE AND NOT CMAKE_CXX_INCLUDE_WHAT_YOU_USE)
+    find_program(iwyu_EXECUTABLE include-what-you-use)
+    if(iwyu_EXECUTABLE)
+        set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE ${iwyu_EXECUTABLE})
+    else()
+        message(WARNING "Failed to locate iwyu, please specify with -DCMAKE_CXX_INCLUDE_WHAT_YOU_USE instead")
+    endif()
+endif()
 
 set(DEFAUTL_ALLOCATOR "dlmalloc")
 set(WITH_ALLOCATOR "${DEFAUTL_ALLOCATOR}" CACHE
@@ -604,6 +614,7 @@ if(BUILD_VINEYARD_PYTHON_BINDINGS)
 endif()
 
 add_custom_target(vineyard_tests)
+add_custom_target(vineyard_codegen)
 
 # add sub_directories
 if(BUILD_VINEYARD_BASIC)
@@ -737,12 +748,6 @@ configure_file("${PROJECT_SOURCE_DIR}/vineyard-config.in.cmake"
 )
 configure_file("${PROJECT_SOURCE_DIR}/vineyard-config-version.in.cmake"
                "${PROJECT_BINARY_DIR}/vineyard-config-version.cmake" @ONLY
-)
-# install vineyard-codegen script.
-get_target_property(VINEYARD_CODEGEN_SCRIPT vineyard::codegen IMPORTED_LOCATION)
-install(PROGRAMS "${VINEYARD_CODEGEN_SCRIPT}"
-        DESTINATION bin
-        RENAME vineyard-codegen
 )
 install(FILES "${PROJECT_BINARY_DIR}/vineyard-config.cmake"
               "${PROJECT_BINARY_DIR}/vineyard-config-version.cmake"

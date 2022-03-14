@@ -21,6 +21,7 @@ import os
 import shutil
 
 import numpy as np
+
 import pytest
 
 import vineyard
@@ -65,14 +66,18 @@ def global_object(vineyard_ipc_socket):
 def test_seriarialize_round_trip(vineyard_ipc_socket, vineyard_endpoint, global_object):
     destination = '/tmp/seri-test'
     shutil.rmtree(destination, ignore_errors=True)
-    vineyard.io.serialize(destination,
-                          global_object,
-                          vineyard_ipc_socket=vineyard_ipc_socket,
-                          vineyard_endpoint=vineyard_endpoint)
+    vineyard.io.serialize(
+        destination,
+        global_object,
+        vineyard_ipc_socket=vineyard_ipc_socket,
+        vineyard_endpoint=vineyard_endpoint,
+    )
     logger.info("finish serializing object to %s", destination)
-    ret = vineyard.io.deserialize(destination,
-                                  vineyard_ipc_socket=vineyard_ipc_socket,
-                                  vineyard_endpoint=vineyard_endpoint)
+    ret = vineyard.io.deserialize(
+        destination,
+        vineyard_ipc_socket=vineyard_ipc_socket,
+        vineyard_endpoint=vineyard_endpoint,
+    )
     logger.info("finish deserializing object from %s, as %s", destination, ret)
 
     client = vineyard.connect(vineyard_ipc_socket)
@@ -89,27 +94,33 @@ def test_seriarialize_round_trip(vineyard_ipc_socket, vineyard_endpoint, global_
 
 
 @pytest.mark.skip("require oss")
-def test_seriarialize_round_trip_on_oss(vineyard_ipc_socket, vineyard_endpoint, global_object):
+def test_seriarialize_round_trip_on_oss(
+    vineyard_ipc_socket, vineyard_endpoint, global_object
+):
     accessKeyID = os.environ["ACCESS_KEY_ID"]
     accessKeySecret = os.environ["SECRET_ACCESS_KEY"]
     endpoint = os.environ.get("ENDPOINT", "http://oss-cn-hangzhou.aliyuncs.com")
-    vineyard.io.serialize('oss://grape-uk/tmp/seri-test',
-                          global_object,
-                          vineyard_ipc_socket=vineyard_ipc_socket,
-                          vineyard_endpoint=vineyard_endpoint,
-                          storage_options={
-                              "key": accessKeyID,
-                              "secret": accessKeySecret,
-                              "endpoint": endpoint,
-                          })
-    ret = vineyard.io.deserialize('oss://grape-uk/tmp/seri-test',
-                                  vineyard_ipc_socket=vineyard_ipc_socket,
-                                  vineyard_endpoint=vineyard_endpoint,
-                                  storage_options={
-                                      "key": accessKeyID,
-                                      "secret": accessKeySecret,
-                                      "endpoint": endpoint,
-                                  })
+    vineyard.io.serialize(
+        'oss://grape-uk/tmp/seri-test',
+        global_object,
+        vineyard_ipc_socket=vineyard_ipc_socket,
+        vineyard_endpoint=vineyard_endpoint,
+        storage_options={
+            "key": accessKeyID,
+            "secret": accessKeySecret,
+            "endpoint": endpoint,
+        },
+    )
+    ret = vineyard.io.deserialize(
+        'oss://grape-uk/tmp/seri-test',
+        vineyard_ipc_socket=vineyard_ipc_socket,
+        vineyard_endpoint=vineyard_endpoint,
+        storage_options={
+            "key": accessKeyID,
+            "secret": accessKeySecret,
+            "endpoint": endpoint,
+        },
+    )
 
     client = vineyard.connect(vineyard_ipc_socket)
     expected = client.get(global_object)
@@ -125,7 +136,9 @@ def test_seriarialize_round_trip_on_oss(vineyard_ipc_socket, vineyard_endpoint, 
 
 
 @pytest.mark.skip(reason="require s3")
-def test_seriarialize_round_trip_on_s3(vineyard_ipc_socket, vineyard_endpoint, global_object):
+def test_seriarialize_round_trip_on_s3(
+    vineyard_ipc_socket, vineyard_endpoint, global_object
+):
     accessKeyID = os.environ["ACCESS_KEY_ID"]
     accessKeySecret = os.environ["SECRET_ACCESS_KEY"]
     region_name = os.environ.get("REGION", "us-east-1")
@@ -137,9 +150,7 @@ def test_seriarialize_round_trip_on_s3(vineyard_ipc_socket, vineyard_endpoint, g
         storage_options={
             "key": accessKeyID,
             "secret": accessKeySecret,
-            "client_kwargs": {
-                "region_name": region_name
-            },
+            "client_kwargs": {"region_name": region_name},
         },
     )
     ret = vineyard.io.deserialize(
@@ -149,9 +160,7 @@ def test_seriarialize_round_trip_on_s3(vineyard_ipc_socket, vineyard_endpoint, g
         storage_options={
             "key": accessKeyID,
             "secret": accessKeySecret,
-            "client_kwargs": {
-                "region_name": region_name
-            },
+            "client_kwargs": {"region_name": region_name},
         },
     )
 

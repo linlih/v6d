@@ -444,6 +444,20 @@ void ClientBase::Disconnect() {
   connected_ = false;
 }
 
+void ClientBase::CloseSession() {
+  std::lock_guard<std::recursive_mutex> guard(client_mutex_);
+  if (!Connected()) {
+    return;
+  }
+  std::string message_out;
+  WriteDeleteSessionRequest(message_out);
+  VINEYARD_SUPPRESS(doWrite(message_out));
+  json message_in;
+  VINEYARD_SUPPRESS(doRead(message_in));
+  close(vineyard_conn_);
+  connected_ = false;
+}
+
 Status ClientBase::doWrite(const std::string& message_out) {
   auto status = send_message(vineyard_conn_, message_out);
   if (!status.ok()) {
@@ -482,7 +496,7 @@ Status ClientBase::ClusterInfo(std::map<InstanceID, json>& meta) {
   RETURN_ON_ERROR(doRead(message_in));
   json cluster_meta;
   RETURN_ON_ERROR(ReadClusterMetaReply(message_in, cluster_meta));
-  for (auto& kv : json::iterator_wrapper(cluster_meta)) {
+  for (auto& kv : cluster_meta.items()) {
     InstanceID instance_id = UnspecifiedInstanceID();
     std::stringstream(kv.key().substr(1)) >> instance_id;
     meta.emplace(instance_id, kv.value());
@@ -513,7 +527,7 @@ Status ClientBase::Instances(std::vector<InstanceID>& instances) {
   RETURN_ON_ERROR(doRead(message_in));
   json cluster_meta;
   RETURN_ON_ERROR(ReadClusterMetaReply(message_in, cluster_meta));
-  for (auto& kv : json::iterator_wrapper(cluster_meta)) {
+  for (auto& kv : cluster_meta.items()) {
     InstanceID instance_id;
     std::stringstream(kv.key().substr(1)) >> instance_id;
     instances.emplace_back(instance_id);

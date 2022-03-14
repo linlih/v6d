@@ -42,24 +42,24 @@
 """
 
 import filecmp
-import pytest
 import glob
 import os
 from urllib.parse import urlparse
+
+import pytest
 
 import vineyard
 import vineyard.io
 
 
-def test_local_with_header(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp):
+def test_local_with_header(
+    vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp
+):
     stream = vineyard.io.open(
         "file://%s/p2p-31.e" % test_dataset,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        read_options={
-            "header_row": True,
-            "delimiter": " "
-        },
+        read_options={"header_row": True, "delimiter": " "},
     )
     vineyard.io.open(
         "file://%s/p2p-31.out" % test_dataset_tmp,
@@ -68,18 +68,19 @@ def test_local_with_header(vineyard_ipc_socket, vineyard_endpoint, test_dataset,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp
+    )
 
 
-def test_local_without_header(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp):
+def test_local_without_header(
+    vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp
+):
     stream = vineyard.io.open(
         "file://%s/p2p-31.e" % test_dataset,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        read_options={
-            "header_row": False,
-            "delimiter": " "
-        },
+        read_options={"header_row": False, "delimiter": " "},
     )
     vineyard.io.open(
         "file://%s/p2p-31.out" % test_dataset_tmp,
@@ -88,11 +89,15 @@ def test_local_without_header(vineyard_ipc_socket, vineyard_endpoint, test_datas
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip()
-def test_local_orc(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp):
+def test_local_orc(
+    vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp
+):
     stream = vineyard.io.open(
         "file://%s/p2p-31.e.orc" % test_dataset,
         vineyard_ipc_socket=vineyard_ipc_socket,
@@ -105,7 +110,9 @@ def test_local_orc(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_da
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e.orc" % test_dataset, "%s/testout.orc_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e.orc" % test_dataset, "%s/testout.orc_0" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip_without_hdfs()
@@ -130,19 +137,13 @@ def test_hdfs_orc(
         mode="w",
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
+        storage_options={"host": host, "port": port},
     )
     streamout = vineyard.io.open(
         "%s:///tmp/testout.orc_0" % res.scheme,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
+        storage_options={"host": host, "port": port},
     )
     vineyard.io.open(
         "file://%s/testout1.orc" % test_dataset_tmp,
@@ -151,7 +152,9 @@ def test_hdfs_orc(
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e.orc" % test_dataset, "%s/testout1.orc_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e.orc" % test_dataset, "%s/testout1.orc_0" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip_without_hdfs()
@@ -163,10 +166,7 @@ def test_hive(vineyard_ipc_socket, vineyard_endpoint, test_dataset, hive_endpoin
         "%s:///user/hive/warehouse/pt" % res.scheme,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
+        storage_options={"host": host, "port": port},
     )
     vineyard.io.open(
         "file://%s/testout1.e" % test_dataset,
@@ -178,7 +178,13 @@ def test_hive(vineyard_ipc_socket, vineyard_endpoint, test_dataset, hive_endpoin
 
 
 @pytest.mark.skip_without_hdfs()
-def test_hdfs_tag(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp, hdfs_endpoint):
+def test_hdfs_tag(
+    vineyard_ipc_socket,
+    vineyard_endpoint,
+    test_dataset,
+    test_dataset_tmp,
+    hdfs_endpoint,
+):
     res = urlparse(hdfs_endpoint)
     host, port = res.netloc.split(":")
     port = int(port)
@@ -197,19 +203,13 @@ def test_hdfs_tag(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dat
         mode="w",
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
+        storage_options={"host": host, "port": port},
     )
     hdfs_stream = vineyard.io.open(
         "%s:///tmp/tag_0_0.csv_0" % res.scheme,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
+        storage_options={"host": host, "port": port},
         read_options={
             "header_row": True,
             "delimiter": "|",
@@ -225,7 +225,9 @@ def test_hdfs_tag(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dat
         vineyard_endpoint=vineyard_endpoint,
     )
     combine_files("%s/tag_0_0.out" % test_dataset_tmp)
-    assert filecmp.cmp("%s/ldbc_sample/tag_0_0.csv" % test_dataset, "%s/tag_0_0.out" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/ldbc_sample/tag_0_0.csv" % test_dataset, "%s/tag_0_0.out" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip_without_hdfs()
@@ -243,10 +245,7 @@ def test_hdfs_bytes(
         "file://%s/p2p-31.e" % test_dataset,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        read_options={
-            "header_row": True,
-            "delimiter": " "
-        },
+        read_options={"header_row": True, "delimiter": " "},
     )
     vineyard.io.open(
         "%s:///tmp/p2p-31.out" % res.scheme,
@@ -254,23 +253,14 @@ def test_hdfs_bytes(
         mode="w",
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
+        storage_options={"host": host, "port": port},
     )
     hdfs_stream = vineyard.io.open(
         "%s:///tmp/p2p-31.out_0" % res.scheme,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        storage_options={
-            "host": host,
-            "port": port
-        },
-        read_options={
-            "header_row": True,
-            "delimiter": " "
-        },
+        storage_options={"host": host, "port": port},
+        read_options={"header_row": True, "delimiter": " "},
     )
     vineyard.io.open(
         "file://%s/p2p-31.out" % test_dataset_tmp,
@@ -279,18 +269,19 @@ def test_hdfs_bytes(
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp
+    )
 
 
-def test_vineyard_dataframe(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp):
+def test_vineyard_dataframe(
+    vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp
+):
     stream = vineyard.io.open(
         "file://%s/p2p-31.e" % test_dataset,
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
-        read_options={
-            "header_row": False,
-            "delimiter": " "
-        },
+        read_options={"header_row": False, "delimiter": " "},
     )
     vineyard.io.open(
         "vineyard://p2p-gdf",
@@ -312,11 +303,15 @@ def test_vineyard_dataframe(vineyard_ipc_socket, vineyard_endpoint, test_dataset
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip("oss not available at github ci")
-def test_oss_read(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp):
+def test_oss_read(
+    vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp
+):
     accessKeyID = os.environ["ACCESS_KEY_ID"]
     accessKeySecret = os.environ["SECRET_ACCESS_KEY"]
     endpoint = os.environ.get("ENDPOINT", "http://oss-cn-hangzhou.aliyuncs.com")
@@ -329,10 +324,7 @@ def test_oss_read(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dat
             "secret": accessKeySecret,
             "endpoint": endpoint,
         },
-        read_options={
-            "header_row": False,
-            "delimiter": " "
-        },
+        read_options={"header_row": False, "delimiter": " "},
     )
     vineyard.io.open(
         "file://%s/p2p-31.out" % test_dataset_tmp,
@@ -341,7 +333,9 @@ def test_oss_read(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dat
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip("oss not available at github ci")
@@ -358,14 +352,11 @@ def test_oss_io(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_datas
             "secret": accessKeySecret,
             "endpoint": endpoint,
         },
-        read_options={
-            "header_row": False,
-            "delimiter": " "
-        },
+        read_options={"header_row": False, "delimiter": " "},
         num_workers=2,
     )
     vineyard.io.open(
-        f"oss://grape-uk/p2p-31.out",
+        "oss://grape-uk/p2p-31.out",
         stream,
         mode="w",
         vineyard_ipc_socket=vineyard_ipc_socket,
@@ -380,7 +371,9 @@ def test_oss_io(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_datas
 
 
 @pytest.mark.skip("s3 not available at github ci")
-def test_s3_read(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp):
+def test_s3_read(
+    vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_dataset_tmp
+):
     accessKeyID = os.environ["ACCESS_KEY_ID"]
     accessKeySecret = os.environ["SECRET_ACCESS_KEY"]
     region_name = os.environ.get("REGION", "us-east-1")
@@ -391,14 +384,9 @@ def test_s3_read(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_data
         storage_options={
             "key": accessKeyID,
             "secret": accessKeySecret,
-            "client_kwargs": {
-                "region_name": region_name
-            },
+            "client_kwargs": {"region_name": region_name},
         },
-        read_options={
-            "header_row": False,
-            "delimiter": " "
-        },
+        read_options={"header_row": False, "delimiter": " "},
     )
     vineyard.io.open(
         "file://%s/p2p-31.out" % test_dataset_tmp,
@@ -407,7 +395,9 @@ def test_s3_read(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_data
         vineyard_ipc_socket=vineyard_ipc_socket,
         vineyard_endpoint=vineyard_endpoint,
     )
-    assert filecmp.cmp("%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp)
+    assert filecmp.cmp(
+        "%s/p2p-31.e" % test_dataset, "%s/p2p-31.out_0" % test_dataset_tmp
+    )
 
 
 @pytest.mark.skip("s3 not available at github ci")
@@ -422,14 +412,9 @@ def test_s3_io(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_datase
         storage_options={
             "key": accessKeyID,
             "secret": accessKeySecret,
-            "client_kwargs": {
-                "region_name": region_name
-            },
+            "client_kwargs": {"region_name": region_name},
         },
-        read_options={
-            "header_row": False,
-            "delimiter": " "
-        },
+        read_options={"header_row": False, "delimiter": " "},
         num_workers=2,
     )
     vineyard.io.open(
@@ -441,9 +426,7 @@ def test_s3_io(vineyard_ipc_socket, vineyard_endpoint, test_dataset, test_datase
         storage_options={
             "key": accessKeyID,
             "secret": accessKeySecret,
-            "client_kwargs": {
-                "region_name": region_name
-            },
+            "client_kwargs": {"region_name": region_name},
         },
         num_workers=2,
     )

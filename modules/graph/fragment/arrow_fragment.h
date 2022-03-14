@@ -25,11 +25,11 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "arrow/table.h"
-#include "arrow/util/config.h"
-#include "arrow/util/key_value_metadata.h"
+#include "arrow/api.h"
+#include "arrow/io/api.h"
 #include "boost/algorithm/string.hpp"
 
+#include "grape/fragment/fragment_base.h"
 #include "grape/graph/adj_list.h"
 #include "grape/utils/vertex_array.h"
 
@@ -186,6 +186,9 @@ class ArrowFragment
   using prop_id_t = property_graph_types::PROP_ID_TYPE;
   using label_id_t = property_graph_types::LABEL_ID_TYPE;
   using vertex_range_t = grape::VertexRange<vid_t>;
+  using inner_vertices_t = vertex_range_t;
+  using outer_vertices_t = vertex_range_t;
+  using vertices_t = vertex_range_t;
   using nbr_t = property_graph_utils::Nbr<vid_t, eid_t>;
   using nbr_unit_t = property_graph_utils::NbrUnit<vid_t, eid_t>;
   using adj_list_t = property_graph_utils::AdjList<vid_t, eid_t>;
@@ -199,7 +202,14 @@ class ArrowFragment
   using vid_builder_t = typename ConvertToArrowType<vid_t>::BuilderType;
 
   template <typename DATA_T>
-  using vertex_array_t = grape::VertexArray<DATA_T, vid_t>;
+  using vertex_array_t = grape::VertexArray<vertices_t, DATA_T>;
+
+  template <typename DATA_T>
+  using inner_vertex_array_t = grape::VertexArray<inner_vertices_t, DATA_T>;
+
+  template <typename DATA_T>
+  using outer_vertex_array_t = grape::VertexArray<outer_vertices_t, DATA_T>;
+
   static constexpr grape::LoadStrategy load_strategy =
       grape::LoadStrategy::kBothOutIn;
 
@@ -679,13 +689,15 @@ class ArrowFragment
 
   const PropertyGraphSchema& schema() const override { return schema_; }
 
-  void PrepareToRunApp(grape::MessageStrategy strategy, bool need_split_edges) {
-    if (strategy == grape::MessageStrategy::kAlongEdgeToOuterVertex) {
+  void PrepareToRunApp(const grape::CommSpec& comm_spec,
+                       grape::PrepareConf conf) {
+    if (conf.message_strategy ==
+        grape::MessageStrategy::kAlongEdgeToOuterVertex) {
       initDestFidList(true, true, iodst_, iodoffset_);
-    } else if (strategy ==
+    } else if (conf.message_strategy ==
                grape::MessageStrategy::kAlongIncomingEdgeToOuterVertex) {
       initDestFidList(true, false, idst_, idoffset_);
-    } else if (strategy ==
+    } else if (conf.message_strategy ==
                grape::MessageStrategy::kAlongOutgoingEdgeToOuterVertex) {
       initDestFidList(false, true, odst_, odoffset_);
     }
@@ -1283,9 +1295,9 @@ class ArrowFragment
         entry->AddRelation(rel.first, rel.second);
       }
     }
-
-    if (!schema.Validate()) {
-      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, "Invalid schema.");
+    std::string message;
+    if (!schema.Validate(message)) {
+      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, message);
     }
     // Schema
     new_meta.AddKeyValue("schema", schema.ToJSONString());
@@ -1514,8 +1526,9 @@ class ArrowFragment
                                      table->schema()->field(col_id)->name()});
       }
     }
-    if (!schema.Validate()) {
-      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, "Invalid schema.");
+    std::string message;
+    if (!schema.Validate(message)) {
+      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, message);
     }
     new_meta.AddKeyValue("schema", schema.ToJSONString());
 
@@ -1965,8 +1978,9 @@ class ArrowFragment
         entry->AddRelation(rel.first, rel.second);
       }
     }
-    if (!schema.Validate()) {
-      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, "Invalid schema.");
+    std::string message;
+    if (!schema.Validate(message)) {
+      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, message);
     }
     new_meta.AddKeyValue("schema", schema.ToJSONString());
 
@@ -2179,8 +2193,9 @@ class ArrowFragment
         new_meta.AddMember(table_name, old_meta.GetMemberMeta(table_name));
       }
     }
-    if (!schema.Validate()) {
-      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, "Invalid schema.");
+    std::string message;
+    if (!schema.Validate(message)) {
+      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, message);
     }
     new_meta.AddKeyValue("schema", schema.ToJSONString());
 
@@ -2326,8 +2341,9 @@ class ArrowFragment
     invalidate_label(vertex_labels, "VERTEX", schema.vertex_entries().size());
     invalidate_label(edge_labels, "EDGE", schema.edge_entries().size());
 
-    if (!schema.Validate()) {
-      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, "Invalid schema.");
+    std::string message;
+    if (!schema.Validate(message)) {
+      RETURN_GS_ERROR(ErrorCode::kInvalidValueError, message);
     }
     new_meta.AddKeyValue("schema", schema.ToJSONString());
 
@@ -2587,7 +2603,7 @@ class ArrowFragment
       for (auto e_label_id = 0; e_label_id < edge_label_num_; e_label_id++) {
         std::vector<int> id_num(ivnum_, 0);
         std::set<fid_t> dstset;
-        vertex_t v = inner_vertices.begin();
+        vertex_t v = *inner_vertices.begin();
         auto& fid_list = fid_lists[v_label_id][e_label_id];
         auto& fid_list_offset = fid_lists_offset[v_label_id][e_label_id];
 
