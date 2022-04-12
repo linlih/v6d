@@ -125,10 +125,12 @@ static void recycle_arena(const uintptr_t base, const size_t size,
 }
 }  // namespace memory
 
-std::set<ObjectID> BulkStore::Arena::spans{};
+template <typename ID, typename P>
+std::set<ID> BulkStoreBase<ID, P>::Arena::spans{};
 
-BulkStore::~BulkStore() {
-  std::vector<ObjectID> object_ids;
+template <typename ID, typename P>
+BulkStoreBase<ID, P>::~BulkStoreBase() {
+  std::vector<ID> object_ids;
   object_ids.reserve(objects_.size());
   for (auto iter = objects_.begin(); iter != objects_.end(); iter++) {
     object_ids.emplace_back(iter->first);
@@ -138,32 +140,11 @@ BulkStore::~BulkStore() {
   }
 }
 
-Status BulkStore::PreAllocate(const size_t size) {
-  BulkAllocator::SetFootprintLimit(size);
-  void* pointer = BulkAllocator::Init(size);
-
-  if (pointer == nullptr) {
-    return Status::NotEnoughMemory("mmap failed, size = " +
-                                   std::to_string(size));
-  }
-
-  // insert a special marker for obtaining the whole shared memory range
-  ObjectID object_id = GenerateBlobID(
-      reinterpret_cast<void*>(std::numeric_limits<uintptr_t>::max()));
-  int fd = -1;
-  int64_t map_size = 0;
-  ptrdiff_t offset = 0;
-  GetMallocMapinfo(pointer, &fd, &map_size, &offset);
-  objects_.emplace(
-      object_id,
-      std::make_shared<Payload>(object_id, size, static_cast<uint8_t*>(pointer),
-                                fd, map_size, offset));
-  return Status::OK();
-}
-
 // Allocate memory
-uint8_t* BulkStore::AllocateMemory(size_t size, int* fd, int64_t* map_size,
-                                   ptrdiff_t* offset) {
+template <typename ID, typename P>
+uint8_t* BulkStoreBase<ID, P>::AllocateMemory(size_t size, int* fd,
+                                              int64_t* map_size,
+                                              ptrdiff_t* offset) {
   // Try to evict objects until there is enough space.
   uint8_t* pointer = nullptr;
   pointer =
@@ -174,78 +155,106 @@ uint8_t* BulkStore::AllocateMemory(size_t size, int* fd, int64_t* map_size,
   return pointer;
 }
 
-Status BulkStore::Create(const size_t data_size, ObjectID& object_id,
-                         std::shared_ptr<Payload>& object) {
-  if (data_size == 0) {
-    object_id = EmptyBlobID();
-    object = Payload::MakeEmpty();
-    return Status::OK();
-  }
-  int fd = -1;
-  int64_t map_size = 0;
-  ptrdiff_t offset = 0;
-  uint8_t* pointer = nullptr;
-  pointer = AllocateMemory(data_size, &fd, &map_size, &offset);
-  if (pointer == nullptr) {
-    return Status::NotEnoughMemory("size = " + std::to_string(data_size));
-  }
-  object_id = GenerateBlobID(pointer);
-  object = std::make_shared<Payload>(object_id, data_size, pointer, fd,
-                                     map_size, offset);
-  objects_.emplace(object_id, object);
-  DVLOG(10) << "after allocate: " << ObjectIDToString(object_id) << ": "
-            << Footprint() << "(" << FootprintLimit() << ")";
-  return Status::OK();
-}
-
-Status BulkStore::Get(const ObjectID id, std::shared_ptr<Payload>& object) {
-  if (id == EmptyBlobID()) {
-    object = Payload::MakeEmpty();
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::Seal(ID const& id) {
+  if (id == EmptyBlobID<ID>()) {
     return Status::OK();
   } else {
-    object_map_t::const_accessor accessor;
+    typename object_map_t::const_accessor accessor;
     if (objects_.find(accessor, id)) {
-      object = accessor->second;
+      auto object = accessor->second;
+      object->MarkAsSealed();
       return Status::OK();
     } else {
-      return Status::ObjectNotExists("get: id = " + ObjectIDToString(id));
+      return Status::ObjectNotExists("get: id = " + IDToString<ID>(id));
     }
   }
 }
 
-Status BulkStore::Get(const std::vector<ObjectID>& ids,
-                      std::vector<std::shared_ptr<Payload>>& objects) {
-  for (auto object_id : ids) {
-    if (object_id == EmptyBlobID()) {
-      objects.push_back(Payload::MakeEmpty());
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::Get(ID const& id, std::shared_ptr<P>& object) {
+  if (id == EmptyBlobID<ID>()) {
+    object = P::MakeEmpty();
+    return Status::OK();
+  } else {
+    typename object_map_t::const_accessor accessor;
+    if (objects_.find(accessor, id)) {
+      if (accessor->second->IsSealed()) {
+        object = accessor->second;
+        return Status::OK();
+      } else {
+        return Status::ObjectNotSealed("Failed to get blob with id " +
+                                       IDToString<ID>(id));
+      }
     } else {
-      object_map_t::const_accessor accessor;
+      return Status::ObjectNotExists("Failed to get blob with id " +
+                                     IDToString<ID>(id));
+    }
+  }
+}
+
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::GetUnchecked(ID const& id,
+                                          std::shared_ptr<P>& object) {
+  if (id == EmptyBlobID<ID>()) {
+    object = P::MakeEmpty();
+    return Status::OK();
+  } else {
+    typename object_map_t::const_accessor accessor;
+    if (objects_.find(accessor, id)) {
+      object = accessor->second;
+      return Status::OK();
+    } else {
+      return Status::ObjectNotExists("Failed to get blob with id " +
+                                     IDToString<ID>(id));
+    }
+  }
+}
+
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::Get(std::vector<ID> const& ids,
+                                 std::vector<std::shared_ptr<P>>& objects) {
+  for (auto object_id : ids) {
+    if (object_id == EmptyBlobID<ID>()) {
+      objects.push_back(P::MakeEmpty());
+    } else {
+      typename object_map_t::const_accessor accessor;
       if (objects_.find(accessor, object_id)) {
-        objects.push_back(accessor->second);
+        auto object = accessor->second;
+        if (object->IsSealed()) {
+          objects.push_back(accessor->second);
+        } else {
+          objects.clear();
+          return Status::ObjectNotSealed();
+        }
       }
     }
   }
   return Status::OK();
 }
 
-Status BulkStore::Delete(const ObjectID& object_id) {
-  // see also: BulkStore::PreAllocate().
-  if (object_id == EmptyBlobID() ||
-      object_id == GenerateBlobID(reinterpret_cast<void*>(
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::Delete(ID const& object_id) {
+  if (object_id == EmptyBlobID<ID>() ||
+      object_id == GenerateBlobID<ID>(reinterpret_cast<void*>(
                        std::numeric_limits<uintptr_t>::max()))) {
     return Status::OK();
   }
-  object_map_t::const_accessor accessor;
+  typename object_map_t::const_accessor accessor;
   if (!objects_.find(accessor, object_id)) {
-    return Status::ObjectNotExists("delete: id = " +
-                                   ObjectIDToString(object_id));
+    return Status::ObjectNotExists("delete: id = " + IDToString(object_id));
   }
   auto& object = accessor->second;
+
+  if (!object->IsOwner()) {
+    return Status::OK();
+  }
+
   if (object->arena_fd == -1) {
     auto buff_size = object->data_size;
     BulkAllocator::Free(object->pointer, buff_size);
-    DVLOG(10) << "after free: " << ObjectIDToString(object_id) << ": "
-              << Footprint() << "(" << FootprintLimit() << ")";
+    DVLOG(10) << "after free: " << IDToString(object_id) << ": " << Footprint()
+              << "(" << FootprintLimit() << ")";
   } else {
     static size_t page_size = memory::system_page_size();
     uintptr_t pointer = reinterpret_cast<uintptr_t>(object->pointer);
@@ -256,7 +265,7 @@ Status BulkStore::Delete(const ObjectID& object_id) {
       auto iter = Arena::spans.find(object_id);
       if (iter != Arena::spans.begin()) {
         auto iter_prev = std::prev(iter);
-        object_map_t::const_accessor accessor;
+        typename object_map_t::const_accessor accessor;
         if (!objects_.find(accessor, *iter_prev)) {
           return Status::Invalid(
               "Internal state error: previous blob not found");
@@ -269,7 +278,7 @@ Status BulkStore::Delete(const ObjectID& object_id) {
       }
       auto iter_next = std::next(iter);
       if (iter_next != Arena::spans.end()) {
-        object_map_t::const_accessor accessor;
+        typename object_map_t::const_accessor accessor;
         if (!objects_.find(accessor, *iter_next)) {
           return Status::Invalid("Internal state error: next blob not found");
         }
@@ -290,21 +299,29 @@ Status BulkStore::Delete(const ObjectID& object_id) {
   return Status::OK();
 }
 
-bool BulkStore::Exists(const ObjectID& object_id) {
-  object_map_t::const_accessor accessor;
+template <typename ID, typename P>
+bool BulkStoreBase<ID, P>::Exists(const ID& object_id) {
+  typename object_map_t::const_accessor accessor;
   return objects_.find(accessor, object_id);
 }
 
-size_t BulkStore::Footprint() const { return BulkAllocator::Allocated(); }
+template <typename ID, typename P>
+size_t BulkStoreBase<ID, P>::Footprint() const {
+  return BulkAllocator::Allocated();
+}
 
-size_t BulkStore::FootprintLimit() const {
+template <typename ID, typename P>
+size_t BulkStoreBase<ID, P>::FootprintLimit() const {
   return BulkAllocator::GetFootprintLimit();
 }
 
-Status BulkStore::MakeArena(size_t const size, int& fd, uintptr_t& base) {
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::MakeArena(size_t const size, int& fd,
+                                       uintptr_t& base) {
   fd = memory::create_buffer(size);
   if (fd == -1) {
-    return Status::NotEnoughMemory("Failed to allocate a new arena");
+    return Status::NotEnoughMemory("Failed to allocate a new arena of size " +
+                                   std::to_string(size));
   }
   void* space = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   base = reinterpret_cast<uintptr_t>(space);
@@ -314,9 +331,34 @@ Status BulkStore::MakeArena(size_t const size, int& fd, uintptr_t& base) {
   return Status::OK();
 }
 
-Status BulkStore::FinalizeArena(const int fd,
-                                std::vector<size_t> const& offsets,
-                                std::vector<size_t> const& sizes) {
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::PreAllocate(const size_t size) {
+  BulkAllocator::SetFootprintLimit(size);
+  void* pointer = BulkAllocator::Init(size);
+
+  if (pointer == nullptr) {
+    return Status::NotEnoughMemory("mmap failed, size = " +
+                                   std::to_string(size));
+  }
+
+  // insert a special marker for obtaining the whole shared memory range
+  ID object_id = GenerateBlobID<ID>(
+      reinterpret_cast<void*>(std::numeric_limits<uintptr_t>::max()));
+  int fd = -1;
+  int64_t map_size = 0;
+  ptrdiff_t offset = 0;
+  GetMallocMapinfo(pointer, &fd, &map_size, &offset);
+  objects_.emplace(
+      object_id,
+      std::make_shared<P>(object_id, size, static_cast<uint8_t*>(pointer), fd,
+                          map_size, offset));
+  return Status::OK();
+}
+
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::FinalizeArena(const int fd,
+                                           std::vector<size_t> const& offsets,
+                                           std::vector<size_t> const& sizes) {
   VLOG(2) << "finalizing arena (fd) " << fd << "...";
   auto arena = arenas_.find(fd);
   if (arena == arenas_.end()) {
@@ -334,11 +376,11 @@ Status BulkStore::FinalizeArena(const int fd,
             << " of size " << sizes[idx];
     // make them available for blob pool
     uintptr_t pointer = mmap_base + offsets[idx];
-    ObjectID object_id = GenerateBlobID(pointer);
-    objects_.emplace(object_id, std::make_shared<Payload>(
-                                    object_id, sizes[idx],
-                                    reinterpret_cast<uint8_t*>(pointer), fd,
-                                    mmap_size, offsets[idx]));
+    ID object_id = GenerateBlobID<ID>(pointer);
+    objects_.emplace(
+        object_id, std::make_shared<P>(object_id, sizes[idx],
+                                       reinterpret_cast<uint8_t*>(pointer), fd,
+                                       mmap_size, offsets[idx]));
     // record the span, will be used to release memory back to OS when deleting
     // blobs
     Arena::spans.emplace(object_id);
@@ -354,6 +396,139 @@ Status BulkStore::FinalizeArena(const int fd,
     arenas_.erase(arena);
   }
   return Status::OK();
+}
+
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::MoveOwnership(
+    std::map<ID, P> const& to_process_ids) {
+  for (auto& item : to_process_ids) {
+    auto id = item.first;
+    typename object_map_t::const_accessor accessor;
+    // already exists
+    if (objects_.find(accessor, id)) {
+      continue;
+    }
+    auto object = std::make_shared<P>(item.second);
+    object->MarkAsSealed();
+    objects_.emplace(id, object);
+  }
+  return Status::OK();
+}
+
+template <typename ID, typename P>
+Status BulkStoreBase<ID, P>::RemoveOwnership(
+    std::set<ID> const& ids, std::map<ID, P>& successed_id_to_size) {
+  for (auto id : ids) {
+    if (id == EmptyBlobID<ID>() ||
+        id == GenerateBlobID<ID>(reinterpret_cast<void*>(
+                  std::numeric_limits<uintptr_t>::max()))) {
+      continue;
+    }
+    typename object_map_t::const_accessor accessor;
+    if (!objects_.find(accessor, id)) {
+      // already deleted by other session
+      continue;
+    } else {
+      successed_id_to_size.emplace(id, *(accessor->second));
+      accessor->second->RemoveOwner();
+    }
+  }
+  return Status::OK();
+}
+
+template class BulkStoreBase<ObjectID, Payload>;
+
+template class BulkStoreBase<PlasmaID, PlasmaPayload>;
+
+// implementation for BulkStore
+Status BulkStore::Create(const size_t data_size, ObjectID& object_id,
+                         std::shared_ptr<Payload>& object) {
+  if (data_size == 0) {
+    object_id = EmptyBlobID<ObjectID>();
+    object = Payload::MakeEmpty();
+    return Status::OK();
+  }
+  int fd = -1;
+  int64_t map_size = 0;
+  ptrdiff_t offset = 0;
+  uint8_t* pointer = nullptr;
+  pointer = AllocateMemory(data_size, &fd, &map_size, &offset);
+  if (pointer == nullptr) {
+    return Status::NotEnoughMemory(
+        "Failed to allocate memory of size " + std::to_string(data_size) +
+        ", total available memory size are " +
+        std::to_string(FootprintLimit()) + ", and " +
+        std::to_string(Footprint()) + " are already in use");
+  }
+  object_id = GenerateBlobID<ObjectID>(pointer);
+  object = std::make_shared<Payload>(object_id, data_size, pointer, fd,
+                                     map_size, offset);
+  objects_.emplace(object_id, object);
+  DVLOG(10) << "after allocate: " << IDToString<ObjectID>(object_id) << ": "
+            << Footprint() << "(" << FootprintLimit() << ")";
+  return Status::OK();
+}
+
+// implementation for PlasmaBulkStore
+Status PlasmaBulkStore::Create(size_t const data_size, size_t const plasma_size,
+                               PlasmaID const& plasma_id, ObjectID& object_id,
+                               std::shared_ptr<PlasmaPayload>& object) {
+  if (data_size == 0) {
+    object = PlasmaPayload::MakeEmpty();
+    return Status::OK();
+  }
+  int fd = -1;
+  int64_t map_size = 0;
+  ptrdiff_t offset = 0;
+  uint8_t* pointer = nullptr;
+  pointer = AllocateMemory(data_size, &fd, &map_size, &offset);
+  if (pointer == nullptr) {
+    return Status::NotEnoughMemory("size = " + std::to_string(data_size));
+  }
+  object_id = GenerateBlobID<ObjectID>(pointer);
+  object =
+      std::make_shared<PlasmaPayload>(plasma_id, object_id, plasma_size,
+                                      data_size, pointer, fd, map_size, offset);
+  objects_.emplace(plasma_id, object);
+  DVLOG(10) << "after allocate: " << IDToString<PlasmaID>(plasma_id) << ": "
+            << Footprint() << "(" << FootprintLimit() << ")";
+  return Status::OK();
+}
+
+Status PlasmaBulkStore::OnRelease(PlasmaID const& id) {
+  typename object_map_t::const_accessor accessor;
+  if (!objects_.find(accessor, id)) {
+    return Status::ObjectNotExists("object " + PlasmaIDToString(id) +
+                                   " cannot be found");
+  } else {
+    RETURN_ON_ERROR(OnDelete(id));
+  }
+  return Status::OK();
+}
+
+Status PlasmaBulkStore::Release(PlasmaID const& id, int conn) {
+  return this->RemoveDependency(id, conn);
+}
+
+Status PlasmaBulkStore::FetchAndModify(const PlasmaID& id, int64_t& ref_cnt,
+                                       int64_t changes) {
+  typename object_map_t::const_accessor accessor;
+  if (!objects_.find(accessor, id)) {
+    return Status::ObjectNotExists("object " + IDToString(id) +
+                                   " cannot be found");
+  } else {
+    accessor->second->ref_cnt += changes;
+    ref_cnt = accessor->second->ref_cnt;
+  }
+  return Status::OK();
+}
+
+Status PlasmaBulkStore::OnDelete(PlasmaID const& id) {
+  return BulkStoreBase<PlasmaID, PlasmaPayload>::Delete(id);
+}
+
+Status PlasmaBulkStore::Delete(PlasmaID const& id) {
+  return this->PreDelete(id);
 }
 
 }  // namespace vineyard

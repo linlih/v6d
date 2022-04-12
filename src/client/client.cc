@@ -32,11 +32,73 @@ limitations under the License.
 #include "client/utils.h"
 #include "common/memory/fling.h"
 #include "common/util/boost.h"
+#include "common/util/logging.h"
 #include "common/util/protocols.h"
 
 namespace vineyard {
 
-Client::Client() : shm_(new detail::SharedMemoryManager(-1)) {}
+BasicIPCClient::BasicIPCClient() : shm_(new detail::SharedMemoryManager(-1)) {}
+
+Status BasicIPCClient::Connect(const std::string& ipc_socket,
+                               std::string const& store_type) {
+  std::lock_guard<std::recursive_mutex> guard(client_mutex_);
+  RETURN_ON_ASSERT(!connected_ || ipc_socket == ipc_socket_);
+  if (connected_) {
+    return Status::OK();
+  }
+  ipc_socket_ = ipc_socket;
+  RETURN_ON_ERROR(connect_ipc_socket_retry(ipc_socket, vineyard_conn_));
+  std::string message_out;
+  WriteRegisterRequest(message_out, store_type);
+  RETURN_ON_ERROR(doWrite(message_out));
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  std::string ipc_socket_value, rpc_endpoint_value;
+  bool store_match;
+  RETURN_ON_ERROR(ReadRegisterReply(message_in, ipc_socket_value,
+                                    rpc_endpoint_value, instance_id_,
+                                    session_id_, server_version_, store_match));
+  rpc_endpoint_ = rpc_endpoint_value;
+  connected_ = true;
+
+  if (!compatible_server(server_version_)) {
+    std::clog << "[warn] Warning: this version of vineyard client may be "
+                 "incompatible with connected server: "
+              << "client's version is " << vineyard_version()
+              << ", while the server's version is " << server_version_
+              << std::endl;
+  }
+
+  shm_.reset(new detail::SharedMemoryManager(vineyard_conn_));
+
+  if (!store_match) {
+    Disconnect();
+    return Status::Invalid("Mismatched store type");
+  }
+  return Status::OK();
+}
+
+Status BasicIPCClient::Open(std::string const& ipc_socket,
+                            std::string const& bulk_store_type) {
+  RETURN_ON_ASSERT(!this->connected_,
+                   "The client has already been connected to vineyard server");
+  std::string socket_path;
+  VINEYARD_CHECK_OK(Connect(ipc_socket, "Any"));
+
+  {
+    std::lock_guard<std::recursive_mutex> guard(client_mutex_);
+    std::string message_out;
+    WriteNewSessionRequest(message_out, bulk_store_type);
+    RETURN_ON_ERROR(doWrite(message_out));
+    json message_in;
+    RETURN_ON_ERROR(doRead(message_in));
+    RETURN_ON_ERROR(ReadNewSessionReply(message_in, socket_path));
+  }
+
+  Disconnect();
+  VINEYARD_CHECK_OK(Connect(socket_path, bulk_store_type));
+  return Status::OK();
+}
 
 Client::~Client() { Disconnect(); }
 
@@ -50,56 +112,11 @@ Status Client::Connect() {
 }
 
 Status Client::Connect(const std::string& ipc_socket) {
-  std::lock_guard<std::recursive_mutex> guard(client_mutex_);
-  RETURN_ON_ASSERT(!connected_ || ipc_socket == ipc_socket_);
-  if (connected_) {
-    return Status::OK();
-  }
-  ipc_socket_ = ipc_socket;
-  RETURN_ON_ERROR(connect_ipc_socket_retry(ipc_socket, vineyard_conn_));
-  std::string message_out;
-  WriteRegisterRequest(message_out);
-  RETURN_ON_ERROR(doWrite(message_out));
-  json message_in;
-  RETURN_ON_ERROR(doRead(message_in));
-  std::string ipc_socket_value, rpc_endpoint_value;
-  RETURN_ON_ERROR(ReadRegisterReply(message_in, ipc_socket_value,
-                                    rpc_endpoint_value, instance_id_,
-                                    server_version_));
-  rpc_endpoint_ = rpc_endpoint_value;
-  connected_ = true;
-
-  if (!compatible_server(server_version_)) {
-    std::clog << "[warn] Warning: this version of vineyard client may be "
-                 "incompatible with connected server: "
-              << "client's version is " << vineyard_version()
-              << ", while the server's version is " << server_version_
-              << std::endl;
-  }
-
-  shm_.reset(new detail::SharedMemoryManager(vineyard_conn_));
-  return Status::OK();
+  return BasicIPCClient::Connect(ipc_socket, /*bulk_store_type=*/"Normal");
 }
 
 Status Client::Open(std::string const& ipc_socket) {
-  RETURN_ON_ASSERT(!this->connected_,
-                   "The client has already been connected to vineyard server");
-  std::string socket_path;
-  VINEYARD_CHECK_OK(Connect(ipc_socket));
-
-  {
-    std::lock_guard<std::recursive_mutex> guard(client_mutex_);
-    std::string message_out;
-    WriteNewSessionRequest(message_out);
-    RETURN_ON_ERROR(doWrite(message_out));
-    json message_in;
-    RETURN_ON_ERROR(doRead(message_in));
-    RETURN_ON_ERROR(ReadNewSessionReply(message_in, socket_path));
-  }
-
-  Disconnect();
-  VINEYARD_CHECK_OK(Connect(socket_path));
-  return Status::OK();
+  return BasicIPCClient::Open(ipc_socket, /*bulk_store_type=*/"Normal");
 }
 
 Status Client::Fork(Client& client) {
@@ -415,6 +432,7 @@ Status Client::CreateBuffer(const size_t size, ObjectID& id, Payload& payload,
     dist = shared + payload.data_offset;
   }
   buffer = std::make_shared<arrow::MutableBuffer>(dist, payload.data_size);
+
   return Status::OK();
 }
 
@@ -437,6 +455,7 @@ Status Client::GetBuffers(
     return Status::OK();
   }
   ENSURE_CONNECTED(this);
+
   std::string message_out;
   WriteGetBuffersRequest(ids, message_out);
   RETURN_ON_ERROR(doWrite(message_out));
@@ -444,6 +463,7 @@ Status Client::GetBuffers(
   RETURN_ON_ERROR(doRead(message_in));
   std::vector<Payload> payloads;
   RETURN_ON_ERROR(ReadGetBuffersReply(message_in, payloads));
+
   for (auto const& item : payloads) {
     std::shared_ptr<arrow::Buffer> buffer = nullptr;
     uint8_t *shared = nullptr, *dist = nullptr;
@@ -503,6 +523,311 @@ Status Client::DropBuffer(const ObjectID id, const int fd) {
   RETURN_ON_ERROR(ReadDropBufferReply(message_in));
   return Status::OK();
 }
+
+Status Client::Seal(ObjectID const& object_id) {
+  ENSURE_CONNECTED(this);
+  std::string message_out;
+  WriteSealRequest(object_id, message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadSealReply(message_in));
+  return Status::OK();
+}
+
+Status Client::ShallowCopy(ObjectID const id, ObjectID& target_id,
+                           Client& source_client) {
+  ENSURE_CONNECTED(this);
+  ObjectMeta meta;
+  json tree;
+
+  RETURN_ON_ERROR(source_client.GetData(id, tree, /*sync_remote==*/true));
+  meta.SetMetaData(this, tree);
+  auto bids = meta.GetBufferSet()->AllBufferIds();
+  std::map<ObjectID, ObjectID> mapping;
+  for (auto const& id : bids) {
+    mapping.emplace(id, id);
+  }
+
+  // create buffers in normal bulk store.
+  std::string message_out;
+  WriteMoveBuffersOwnershipRequest(mapping, source_client.session_id(),
+                                   message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadMoveBuffersOwnershipReply(message_in));
+
+  // reconstruct meta tree
+  auto meta_tree = meta.MutMetaData();
+  std::function<ObjectID(json&)> reconstruct =
+      [&](json& meta_tree) -> ObjectID {
+    for (auto& item : meta_tree.items()) {
+      if (item.value().is_object() && !item.value().empty()) {
+        auto sub_id = ObjectIDFromString(
+            item.value()["id"].get_ref<std::string const&>());
+        auto new_sub_id = sub_id;
+        if (mapping.find(sub_id) == mapping.end()) {
+          new_sub_id = reconstruct(item.value());
+          mapping.emplace(sub_id, new_sub_id);
+        } else {
+          new_sub_id = mapping[sub_id];
+        }
+        if (!IsBlob(new_sub_id)) {
+          ObjectMeta sub_meta;
+          VINEYARD_CHECK_OK(GetMetaData(new_sub_id, sub_meta));
+          meta_tree[item.key()] = sub_meta.MetaData();
+        }
+      }
+    }
+    ObjectMeta new_meta;
+    ObjectID new_id;
+    new_meta.SetMetaData(this, meta_tree);
+    VINEYARD_CHECK_OK(CreateMetaData(new_meta, new_id));
+    return new_id;
+  };
+
+  target_id = reconstruct(meta_tree);
+
+  return Status::OK();
+}
+
+Status Client::ShallowCopy(PlasmaID const plasma_id, ObjectID& target_id,
+                           PlasmaClient& source_client) {
+  ENSURE_CONNECTED(this);
+  std::set<PlasmaID> plasma_ids;
+  std::map<PlasmaID, PlasmaPayload> plasma_payloads;
+  plasma_ids.emplace(plasma_id);
+  // get PlasmaPayload to get the object_id and data_size
+  VINEYARD_CHECK_OK(source_client.GetPayloads(plasma_ids, plasma_payloads));
+
+  std::map<PlasmaID, ObjectID> mapping;
+  for (auto const& item : plasma_payloads) {
+    mapping.emplace(item.first, item.second.object_id);
+  }
+
+  // create buffers in normal bulk store.
+  std::string message_out;
+  WriteMoveBuffersOwnershipRequest(mapping, source_client.session_id(),
+                                   message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadMoveBuffersOwnershipReply(message_in));
+
+  /// no need to reconstruct meta_tree since we do not support composable object
+  /// for plasma store.
+  target_id = plasma_payloads.at(plasma_id).object_id;
+  return Status::OK();
+}
+
+PlasmaClient::~PlasmaClient() {}
+
+// dummy implementation
+Status PlasmaClient::GetMetaData(const ObjectID id, ObjectMeta& meta_data,
+                                 const bool sync_remote) {
+  return Status::Invalid("Unsupported.");
+}
+
+Status PlasmaClient::Seal(PlasmaID const& plasma_id) {
+  ENSURE_CONNECTED(this);
+  std::string message_out;
+  WritePlasmaSealRequest(plasma_id, message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadSealReply(message_in));
+  RETURN_ON_ERROR(SealUsage(plasma_id));
+  return Status::OK();
+}
+
+Status PlasmaClient::Open(std::string const& ipc_socket) {
+  return BasicIPCClient::Open(ipc_socket, /*bulk_store_type=*/"Plasma");
+}
+
+Status PlasmaClient::Connect(const std::string& ipc_socket) {
+  return BasicIPCClient::Connect(ipc_socket, /*bulk_store_type=*/"Plasma");
+}
+
+Status PlasmaClient::CreateBuffer(PlasmaID plasma_id, size_t size,
+                                  size_t plasma_size,
+                                  std::unique_ptr<BlobWriter>& blob) {
+  ENSURE_CONNECTED(this);
+  ObjectID object_id = InvalidObjectID();
+  PlasmaPayload plasma_payload;
+  std::shared_ptr<arrow::MutableBuffer> buffer = nullptr;
+
+  std::string message_out;
+  WriteCreateBufferByPlasmaRequest(plasma_id, size, plasma_size, message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(
+      ReadCreateBufferByPlasmaReply(message_in, object_id, plasma_payload));
+
+  RETURN_ON_ASSERT(static_cast<size_t>(plasma_payload.data_size) == size);
+  uint8_t *shared = nullptr, *dist = nullptr;
+  if (plasma_payload.data_size > 0) {
+    RETURN_ON_ERROR(this->shm_->Mmap(plasma_payload.store_fd,
+                                     plasma_payload.map_size, false, true,
+                                     &shared));
+    dist = shared + plasma_payload.data_offset;
+  }
+  buffer =
+      std::make_shared<arrow::MutableBuffer>(dist, plasma_payload.data_size);
+
+  auto payload = plasma_payload.ToNormalPayload();
+  object_id = payload.object_id;
+  blob.reset(new BlobWriter(object_id, payload, buffer));
+  RETURN_ON_ERROR(AddUsage(plasma_id, plasma_payload));
+  return Status::OK();
+}
+
+Status PlasmaClient::GetPayloads(
+    std::set<PlasmaID> const& plasma_ids,
+    std::map<PlasmaID, PlasmaPayload>& plasma_payloads) {
+  if (plasma_ids.empty()) {
+    return Status::OK();
+  }
+  ENSURE_CONNECTED(this);
+  std::set<PlasmaID> remote_ids;
+  std::vector<PlasmaPayload> local_payloads;
+  std::vector<PlasmaPayload> _payloads;
+
+  /// Lookup in local cache
+  for (auto const& id : plasma_ids) {
+    PlasmaPayload tmp;
+    if (FetchOnLocal(id, tmp).ok()) {
+      local_payloads.emplace_back(tmp);
+    } else {
+      remote_ids.emplace(id);
+    }
+  }
+
+  /// Lookup in remote server
+  std::string message_out;
+  WriteGetBuffersByPlasmaRequest(remote_ids, message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadGetBuffersByPlasmaReply(message_in, _payloads));
+
+  _payloads.insert(_payloads.end(), local_payloads.begin(),
+                   local_payloads.end());
+
+  for (auto const& item : _payloads) {
+    plasma_payloads.emplace(item.plasma_id, item);
+  }
+  return Status::OK();
+}
+
+Status PlasmaClient::GetBuffers(
+    std::set<PlasmaID> const& plasma_ids,
+    std::map<PlasmaID, std::shared_ptr<arrow::Buffer>>& buffers) {
+  std::map<PlasmaID, PlasmaPayload> plasma_payloads;
+  RETURN_ON_ERROR(GetPayloads(plasma_ids, plasma_payloads));
+
+  for (auto const& item : plasma_payloads) {
+    std::shared_ptr<arrow::Buffer> buffer = nullptr;
+    uint8_t *shared = nullptr, *dist = nullptr;
+    if (item.second.data_size > 0) {
+      VINEYARD_CHECK_OK(this->shm_->Mmap(
+          item.second.store_fd, item.second.map_size, true, true, &shared));
+      dist = shared + item.second.data_offset;
+    }
+    buffer = std::make_shared<arrow::Buffer>(dist, item.second.data_size);
+    buffers.emplace(item.second.plasma_id, buffer);
+
+    RETURN_ON_ERROR(AddUsage(item.second.plasma_id, item.second));
+  }
+  return Status::OK();
+}
+
+Status PlasmaClient::ShallowCopy(PlasmaID const plasma_id, PlasmaID& target_pid,
+                                 PlasmaClient& source_client) {
+  ENSURE_CONNECTED(this);
+  std::map<PlasmaID, PlasmaID> mapping;
+  mapping.emplace(plasma_id, plasma_id);
+
+  // create a new plasma object in plasma bulk store.
+  std::string message_out;
+  WriteMoveBuffersOwnershipRequest(mapping, source_client.session_id(),
+                                   message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadMoveBuffersOwnershipReply(message_in));
+
+  /// no need to reconstruct meta_tree since we do not support composable object
+  /// for plasma store.
+  target_pid = plasma_id;
+  return Status::OK();
+}
+
+Status PlasmaClient::ShallowCopy(ObjectID const id,
+                                 std::set<PlasmaID>& target_pids,
+                                 Client& source_client) {
+  ENSURE_CONNECTED(this);
+  ObjectMeta meta;
+  json tree;
+
+  RETURN_ON_ERROR(source_client.GetData(id, tree, /*sync_remote==*/true));
+  meta.SetMetaData(this, tree);
+  auto bids = meta.GetBufferSet()->AllBufferIds();
+
+  std::map<ObjectID, PlasmaID> mapping;
+  for (auto const& bid : bids) {
+    PlasmaID new_pid = PlasmaIDFromString(ObjectIDToString(bid));
+    mapping.emplace(bid, new_pid);
+  }
+
+  // create a new plasma object in plasma bulk store.
+  std::string message_out;
+  WriteMoveBuffersOwnershipRequest(mapping, source_client.session_id(),
+                                   message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadMoveBuffersOwnershipReply(message_in));
+
+  /// no need to reconstruct meta_tree since we do not support composable object
+  /// for plasma store.
+  return Status::OK();
+}
+
+/// Release an plasma blob.
+Status PlasmaClient::OnRelease(PlasmaID const& plasma_id) {
+  ENSURE_CONNECTED(this);
+  std::string message_out;
+  WritePlasmaReleaseRequest(plasma_id, message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadPlasmaReleaseReply(message_in));
+  return Status::OK();
+}
+
+/// Delete an plasma blob.
+Status PlasmaClient::OnDelete(PlasmaID const& plasma_id) {
+  ENSURE_CONNECTED(this);
+  std::string message_out;
+  WritePlasmaDelDataRequest(plasma_id, message_out);
+  RETURN_ON_ERROR(doWrite(message_out));
+
+  json message_in;
+  RETURN_ON_ERROR(doRead(message_in));
+  RETURN_ON_ERROR(ReadPlasmaDelDataReply(message_in));
+  return Status::OK();
+}
+
+Status PlasmaClient::Release(const PlasmaID& id) { return RemoveUsage(id); }
+
+Status PlasmaClient::Delete(const PlasmaID& id) { return PreDelete(id); }
 
 namespace detail {
 

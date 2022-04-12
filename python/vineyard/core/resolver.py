@@ -50,21 +50,25 @@ class ResolverContext:
             if resolver_func_sig.varkw is not None:
                 value = resolver(obj, resolver=self, **kw)
             else:
-                # don't pass the `**kw`.
-                if 'resolver' in resolver_func_sig.args:
-                    value = resolver(obj, resolver=self)
-                else:
-                    value = resolver(obj)
+                try:
+                    # don't pass the `**kw`.
+                    if 'resolver' in resolver_func_sig.args:
+                        value = resolver(obj, resolver=self)
+                    else:
+                        value = resolver(obj)
+                except Exception:
+                    raise RuntimeError(
+                        'Unable to construct the object using resolver: '
+                        'typename is %s, resolver is %s' % (obj.meta.typename, resolver)
+                    )
             if value is None:
                 # if the obj has been resolved by pybind types, and there's no proper
                 # resolver, it shouldn't be an error
                 if type(obj) is not Object:
                     return obj
 
-                raise RuntimeError(
-                    'Unable to construct the object using resolver: '
-                    'typename is %s, resolver is %s' % (obj.meta.typename, resolver)
-                )
+                # we might `client.put(None)`
+                return None
 
             # associate a reference to the base C++ object
             try:
@@ -107,7 +111,7 @@ def get_current_resolvers():
 
 @contextlib.contextmanager
 def resolver_context(resolvers=None, base=None):
-    '''Open a new context for register resolvers, without populting outside
+    """Open a new context for register resolvers, without populting outside
     the global environment.
 
     The :code:`resolver_context` can be useful when users have more than
@@ -151,7 +155,7 @@ def resolver_context(resolvers=None, base=None):
     See Also:
         builder_context
         driver_context
-    '''
+    """
     current_resolver = get_current_resolvers()
     try:
         resolvers = resolvers or dict()
@@ -164,7 +168,7 @@ def resolver_context(resolvers=None, base=None):
 
 
 def get(client, object_id, resolver=None, **kw):
-    '''Get vineyard object as python value.
+    """Get vineyard object as python value.
 
     .. code:: python
 
@@ -186,7 +190,7 @@ def get(client, object_id, resolver=None, **kw):
 
     Returns:
         A python object that return by the resolver, by resolving an vineyard object.
-    '''
+    """
     # wrap object_id
     if isinstance(object_id, (int, str)):
         object_id = ObjectID(object_id)

@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "client/io.h"
 
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <iostream>
 
 namespace vineyard {
@@ -134,7 +137,8 @@ Status send_bytes(int fd, const void* data, size_t length) {
   size_t offset = 0;
   const char* ptr = static_cast<const char*>(data);
   while (bytes_left > 0) {
-    nbytes = write(fd, ptr + offset, bytes_left);
+    // Release: avoid SIGPIPE in any cases as it is hard to catch and diagnose.
+    nbytes = send(fd, ptr + offset, bytes_left, MSG_NOSIGNAL);
     if (nbytes < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
         continue;
@@ -189,4 +193,15 @@ Status recv_message(int fd, std::string& msg) {
   return Status::OK();
 }
 
+Status check_fd(int fd) {
+  int r = fcntl(fd, F_GETFL);
+  if (r == -1) {
+    return Status::Invalid("fd error.");
+  } else if (r & O_RDONLY) {
+    return Status::Invalid("fd is read-only.");
+  } else if (r & O_WRONLY) {
+    return Status::Invalid("fd is write-only.");
+  }
+  return Status::OK();
+}
 }  // namespace vineyard

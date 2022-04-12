@@ -90,7 +90,7 @@ def start_etcd():
 def start_vineyardd(
     etcd_endpoints,
     etcd_prefix,
-    size=4 * 1024 * 1024 * 1024,
+    size=3 * 1024 * 1024 * 1024,
     default_ipc_socket=VINEYARD_CI_IPC_SOCKET,
     idx=None,
     **kw,
@@ -286,7 +286,9 @@ def run_single_vineyardd_tests():
         run_test('clear_test')
         run_test('custom_vector_test')
         run_test('dataframe_test')
+        run_test('deep_copy_test')
         run_test('delete_test')
+        run_test('plasma_test')
         run_test('get_wait_test')
         run_test('get_object_test')
         run_test('global_object_test')
@@ -296,23 +298,21 @@ def run_single_vineyardd_tests():
         run_test('large_meta_test')
         run_test('list_object_test')
         run_test('name_test')
-        run_test('pair_test')
         run_test('persist_test')
         run_test('rpc_delete_test', '127.0.0.1:%d' % rpc_socket_port)
         run_test('rpc_get_object_test', '127.0.0.1:%d' % rpc_socket_port)
         run_test('rpc_test', '127.0.0.1:%d' % rpc_socket_port)
         run_test('scalar_test')
+        run_test('sequence_test')
         run_test('server_status_test')
+        run_test('session_test')
         run_test('signature_test')
         run_test('shallow_copy_test')
         run_test('shared_memory_test')
-        run_test('deep_copy_test')
         run_test('stream_test')
         run_test('tensor_test')
-        run_test('tuple_test')
         run_test('typename_test')
         run_test('version_test')
-        run_test('session_test')
 
         run_invalid_client_test('127.0.0.1', rpc_socket_port)
 

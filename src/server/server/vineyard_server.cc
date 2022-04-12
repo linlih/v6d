@@ -60,25 +60,36 @@ bool DeferredReq::TestThenCall(const json& meta) const {
   return false;
 }
 
-VineyardServer::VineyardServer(const json& spec, const SessionId& session_id,
+VineyardServer::VineyardServer(const json& spec, const SessionID& session_id,
                                std::shared_ptr<VineyardRunner> runner,
+#if BOOST_VERSION >= 106600
                                asio::io_context& context,
-                               asio::io_context& meta_context)
+                               asio::io_context& meta_context,
+#else
+                               asio::io_service& context,
+                               asio::io_service& meta_context,
+#endif
+                               callback_t<std::string const&> callback)
     : spec_(spec),
       session_id_(session_id),
       context_(context),
       meta_context_(meta_context),
+      callback_(callback),
       runner_(runner),
-      ready_(0) {}
+      ready_(0) {
+}
 
-Status VineyardServer::Serve() {
+Status VineyardServer::Serve(std::string const& bulk_store_type) {
   stopped_.store(false);
+  this->bulk_store_type_ = bulk_store_type;
 
   // Initialize the ipc/rpc server ptr first to get self endpoints when
   // initializing the metadata service.
   ipc_server_ptr_ =
       std::unique_ptr<IPCServer>(new IPCServer(shared_from_this()));
-  if (spec_["rpc_spec"]["rpc"].get<bool>()) {
+  if (session_id_ == RootSessionID() && spec_["rpc_spec"]["rpc"].get<bool>()) {
+    // TODO: the rpc won't be enabled for child sessions as we are unsure
+    // about how to select the port.
     rpc_server_ptr_ =
         std::unique_ptr<RPCServer>(new RPCServer(shared_from_this()));
   }
@@ -86,12 +97,24 @@ Status VineyardServer::Serve() {
   this->meta_service_ptr_ = IMetaService::Get(shared_from_this());
   RETURN_ON_ERROR(this->meta_service_ptr_->Start());
 
-  bulk_store_ = std::make_shared<BulkStore>();
-  RETURN_ON_ERROR(bulk_store_->PreAllocate(
-      spec_["bulkstore_spec"]["memory_size"].get<size_t>()));
-  stream_store_ = std::make_shared<StreamStore>(
-      shared_from_this(), bulk_store_,
-      spec_["bulkstore_spec"]["stream_threshold"].get<size_t>());
+  if (bulk_store_type_ == "Plasma") {
+    plasma_bulk_store_ = std::make_shared<PlasmaBulkStore>();
+    RETURN_ON_ERROR(plasma_bulk_store_->PreAllocate(
+        spec_["bulkstore_spec"]["memory_size"].get<size_t>()));
+
+    // TODO(mengke.mk): Currently we do not allow streamming in plasma
+    // bulkstore, anyway, we can templatize stream store to solve this.
+    stream_store_ = nullptr;
+  } else {
+    bulk_store_ = std::make_shared<BulkStore>();
+    RETURN_ON_ERROR(bulk_store_->PreAllocate(
+        spec_["bulkstore_spec"]["memory_size"].get<size_t>()));
+
+    stream_store_ = std::make_shared<StreamStore>(
+        shared_from_this(), bulk_store_,
+        spec_["bulkstore_spec"]["stream_threshold"].get<size_t>());
+  }
+
   BulkReady();
 
   serve_status_ = Status::OK();
@@ -100,7 +123,9 @@ Status VineyardServer::Serve() {
 
 Status VineyardServer::Finalize() { return Status::OK(); }
 
-void VineyardServer::Ready() {}
+void VineyardServer::Ready() {
+  VINEYARD_DISCARD(callback_(Status::OK(), IPCSocket()));
+}
 
 void VineyardServer::BackendReady() {
   try {
@@ -113,6 +138,7 @@ void VineyardServer::BackendReady() {
                << ", or please try to cleanup existing "
                << spec_["ipc_spec"]["socket"];
     serve_status_ = Status::IOError();
+    VINEYARD_DISCARD(callback_(serve_status_, IPCSocket()));
     context_.stop();
     return;
   }
@@ -127,6 +153,7 @@ void VineyardServer::BackendReady() {
   } catch (std::exception const& ex) {
     LOG(ERROR) << "Failed to start vineyard RPC server: " << ex.what();
     serve_status_ = Status::IOError();
+    VINEYARD_DISCARD(callback_(serve_status_, IPCSocket()));
     context_.stop();
     return;
   }
@@ -979,6 +1006,9 @@ void VineyardServer::Stop() {
   this->ipc_server_ptr_.reset(nullptr);
   this->rpc_server_ptr_.reset(nullptr);
   this->meta_service_ptr_.reset();
+  this->stream_store_.reset();
+  this->bulk_store_.reset();
+  this->plasma_bulk_store_.reset();
 }
 
 bool VineyardServer::Running() const { return !stopped_.load(); }

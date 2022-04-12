@@ -73,23 +73,36 @@ enum class CommandType {
   NewSessionReply = 39,
   DeleteSessionRequest = 40,
   DeleteSessionReply = 41,
+  SealRequest = 42,
+  CreateBufferByPlasmaRequest = 43,
+  CreateBufferByPlasmaReply = 44,
+  GetBuffersByPlasmaRequest = 45,
+  GetBuffersByPlasmaReply = 46,
+  PlasmaSealRequest = 47,
+  PlasmaReleaseRequest = 48,
+  PlasmaDelDataRequest = 49,
+  MoveBuffersOwnershipRequest = 50,
 };
 
 CommandType ParseCommandType(const std::string& str_type);
 
 void WriteErrorReply(Status const& status, std::string& msg);
 
-void WriteRegisterRequest(std::string& msg);
+void WriteRegisterRequest(std::string& msg, std::string const& bulk_store_type);
 
-Status ReadRegisterRequest(const json& msg, std::string& version);
+Status ReadRegisterRequest(const json& msg, std::string& version,
+                           std::string& bulk_store_type);
 
 void WriteRegisterReply(const std::string& ipc_socket,
                         const std::string& rpc_endpoint,
-                        const InstanceID instance_id, std::string& msg);
+                        const InstanceID instance_id,
+                        const SessionID session_id, bool& store_match,
+                        std::string& msg);
 
 Status ReadRegisterReply(const json& msg, std::string& ipc_socket,
                          std::string& rpc_endpoint, InstanceID& instance_id,
-                         std::string& version);
+                         SessionID& sessionid, std::string& version,
+                         bool& store_match);
 
 void WriteExitRequest(std::string& msg);
 
@@ -376,7 +389,10 @@ void WriteDebugReply(const json& result, std::string& msg);
 
 Status ReadDebugReply(const json& root, json& result);
 
-void WriteNewSessionRequest(std::string& msg);
+void WriteNewSessionRequest(std::string& msg,
+                            std::string const& bulk_store_type);
+
+Status ReadNewSessionRequest(json const& root, std::string& bulk_store_type);
 
 void WriteNewSessionReply(std::string& msg, std::string const& socket_path);
 
@@ -385,6 +401,100 @@ Status ReadNewSessionReply(json const& root, std::string& socket_path);
 void WriteDeleteSessionRequest(std::string& msg);
 
 void WriteDeleteSessionReply(std::string& msg);
+
+void WriteCreateBufferByPlasmaRequest(PlasmaID const plasma_id,
+                                      size_t const size,
+                                      size_t const plasma_size,
+                                      std::string& msg);
+
+Status ReadCreateBufferByPlasmaRequest(json const& root, PlasmaID& plasma_id,
+                                       size_t& size, size_t& plasma_size);
+
+void WriteCreateBufferByPlasmaReply(
+    ObjectID const object_id,
+    const std::shared_ptr<PlasmaPayload>& plasma_object, std::string& msg);
+
+Status ReadCreateBufferByPlasmaReply(json const& root, ObjectID& object_id,
+                                     PlasmaPayload& plasma_object);
+
+void WriteGetBuffersByPlasmaRequest(std::set<PlasmaID> const& plasma_ids,
+                                    std::string& msg);
+
+Status ReadGetBuffersByPlasmaRequest(json const& root,
+                                     std::vector<PlasmaID>& plasma_ids);
+
+void WriteGetBuffersByPlasmaReply(
+    std::vector<std::shared_ptr<PlasmaPayload>> const& plasma_objects,
+    std::string& msg);
+
+Status ReadGetBuffersByPlasmaReply(json const& root,
+                                   std::vector<PlasmaPayload>& plasma_objects);
+
+void WriteSealRequest(ObjectID const& object_id, std::string& message_out);
+
+Status ReadSealRequest(json const& root, ObjectID& object_id);
+
+void WritePlasmaSealRequest(PlasmaID const& plasma_id,
+                            std::string& message_out);
+
+Status ReadPlasmaSealRequest(json const& root, PlasmaID& plasma_id);
+
+void WriteSealReply(std::string& msg);
+
+Status ReadSealReply(json const& root);
+
+void WritePlasmaReleaseRequest(PlasmaID const& plasma_id,
+                               std::string& message_out);
+
+Status ReadPlasmaReleaseRequest(json const& root, PlasmaID& plasma_id);
+
+void WritePlasmaReleaseReply(std::string& msg);
+
+Status ReadPlasmaReleaseReply(json const& root);
+
+void WritePlasmaReleaseReply(std::string& msg);
+
+Status ReadPlasmaReleaseReply(json const& root);
+
+void WritePlasmaDelDataRequest(PlasmaID const& plasma_id,
+                               std::string& message_out);
+
+Status ReadPlasmaDelDataRequest(json const& root, PlasmaID& plasma_id);
+
+void WritePlasmaDelDataReply(std::string& msg);
+
+Status ReadPlasmaDelDataReply(json const& root);
+
+/// normal -> normal
+void WriteMoveBuffersOwnershipRequest(
+    std::map<ObjectID, ObjectID> const& id_to_id, SessionID const session_id,
+    std::string& msg);
+
+/// normal -> plasma
+void WriteMoveBuffersOwnershipRequest(
+    std::map<PlasmaID, ObjectID> const& pid_to_id, SessionID const session_id,
+    std::string& msg);
+
+/// plasma -> normal
+void WriteMoveBuffersOwnershipRequest(
+    std::map<ObjectID, PlasmaID> const& id_to_pid, SessionID const session_id,
+    std::string& msg);
+
+/// plasma -> plasma
+void WriteMoveBuffersOwnershipRequest(
+    std::map<PlasmaID, PlasmaID> const& pid_to_pid, SessionID const session_id,
+    std::string& msg);
+
+Status ReadMoveBuffersOwnershipRequest(json const& root,
+                                       std::map<ObjectID, ObjectID>& id_to_id,
+                                       std::map<PlasmaID, ObjectID>& pid_to_id,
+                                       std::map<ObjectID, PlasmaID>& id_to_pid,
+                                       std::map<PlasmaID, PlasmaID>& pid_to_pid,
+                                       SessionID& session_id);
+
+void WriteMoveBuffersOwnershipReply(std::string& msg);
+
+Status ReadMoveBuffersOwnershipReply(json const& root);
 
 }  // namespace vineyard
 

@@ -2,20 +2,43 @@
 file(GLOB_RECURSE VINEYARD_MOD_SRCS "${CMAKE_CURRENT_SOURCE_DIR}"
                                     "*.vineyard-mod")
 
+file(GLOB_RECURSE VINEYARD_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}"
+                                   "*.h")
+
 find_package(MPI REQUIRED)
 find_package(libgrapelite REQUIRED)
 
-if (VINEYARD_MOD_SRCS)
+if(VINEYARD_MOD_SRCS)
     vineyard_generate(
         OUT_VAR VINEYARD_GENERATES
         VINEYARD_MODULES ${VINEYARD_MOD_SRCS}
     )
-    add_custom_target(vineyard_graph_gen
-                      DEPENDS ${VINEYARD_GENERATES}
-                      COMMENT "Running code generation for vineyard_graph."
-    )
-    add_dependencies(vineyard_graph_gen vineyard_basic_gen)
+else()
+    set(VINEYARD_GENERATES)
 endif()
+
+if(FALSE AND BUILD_VINEYARD_JAVA AND (VINEYARD_HEADERS OR VINEYARD_GENERATES))
+    vineyard_generate_java(
+        OUT_VAR VINEYARD_JAVA_GENERATES
+        VINEYARD_MODULES ${VINEYARD_HEADERS} ${VINEYARD_GENERATES}
+        DEPENDS ${VINEYARD_GENERATES}
+    )
+else()
+    set(VINEYARD_JAVA_GENERATES)
+endif()
+
+add_custom_target(vineyard_graph_gen
+                  DEPENDS ${VINEYARD_GENERATES}
+                  COMMENT "Running code generation for vineyard_graph."
+)
+
+add_custom_target(vineyard_graph_java_gen
+                  DEPENDS vineyard_graph_gen
+                          ${VINEYARD_JAVA_GENERATES}
+                  COMMENT "Running java code generation for vineyard_graph."
+)
+
+add_dependencies(vineyard_graph_gen vineyard_basic_gen)
 
 file(GLOB_RECURSE GRAPH_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}" "fragment/*.cc"
                                                                 "loader/*.cc"
@@ -23,30 +46,38 @@ file(GLOB_RECURSE GRAPH_SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}" "fragment/*.cc"
                                                                 "vertex_map/*.cc"
 )
 
-# boost::leaf for error_handling
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/boost-leaf"
-                 "${CMAKE_CURRENT_BINARY_DIR}/thirdparty/boost-leaf"
-)
-# install boost leaf
-include(GNUInstallDirs)
-install(DIRECTORY
-    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/boost-leaf/include/"
-    DESTINATION
-    ${CMAKE_INSTALL_PREFIX}/include
-)
-
 add_library(vineyard_graph ${GRAPH_SRC_FILES})
 target_include_directories(vineyard_graph PUBLIC
                                           ${MPI_CXX_INCLUDE_PATH}
 )
+
+find_package(Boost COMPONENTS leaf)
+if(Boost_LEAF_FOUND)
+    target_include_directories(vineyard_graph PUBLIC ${Boost_INCLUDE_DIRS})
+else()
+    # boost::leaf for error_handling
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/boost-leaf"
+                     "${CMAKE_CURRENT_BINARY_DIR}/thirdparty/boost-leaf"
+    )
+    # install boost leaf
+    include(GNUInstallDirs)
+    install(DIRECTORY
+        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/boost-leaf/include/"
+        DESTINATION
+        ${CMAKE_INSTALL_PREFIX}/include
+    )
+
+    target_include_directories(vineyard_graph PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/boost-leaf/include>
+        $<INSTALL_INTERFACE:include>
+    )
+endif()
+
 target_include_directories(vineyard_graph PUBLIC
     $<BUILD_INTERFACE:${LIBGRAPELITE_INCLUDE_DIRS}>
     $<INSTALL_INTERFACE:include>
 )
-target_include_directories(vineyard_graph PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/boost-leaf/include>
-    $<INSTALL_INTERFACE:include>
-)
+
 target_link_libraries(vineyard_graph vineyard_client
                                      vineyard_basic
                                      vineyard_io
@@ -56,9 +87,12 @@ target_link_libraries(vineyard_graph vineyard_client
 if(APPLE)
     target_compile_options(vineyard_graph PUBLIC -Wno-unused-result)
 endif()
-if(VINEYARD_MOD_SRCS)
-    add_dependencies(vineyard_graph vineyard_graph_gen)
-    add_dependencies(vineyard_codegen vineyard_graph_gen)
+
+add_dependencies(vineyard_graph vineyard_graph_gen)
+
+add_dependencies(vineyard_codegen vineyard_graph_gen)
+if(VINEYARD_JAVA_GENERATES)
+    add_dependencies(vineyard_codegen_java vineyard_graph_java_gen)
 endif()
 
 install_vineyard_target(vineyard_graph)

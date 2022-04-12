@@ -78,6 +78,7 @@ Status StreamStore::Get(ObjectID const stream_id, size_t const size,
 
   // seal current chunk
   if (stream->current_writing_) {
+    VINEYARD_DISCARD(store_->Seal(stream->current_writing_.get()));
     stream->ready_chunks_.push(stream->current_writing_.get());
     stream->current_writing_ = boost::none;
   }
@@ -236,6 +237,7 @@ Status StreamStore::Stop(ObjectID const stream_id, bool failed) {
   }
   // seal current writing chunk
   if (stream->current_writing_) {
+    VINEYARD_DISCARD(store_->Seal(stream->current_writing_.get()));
     stream->ready_chunks_.push(stream->current_writing_.get());
     stream->current_writing_ = boost::none;
   }
@@ -267,7 +269,7 @@ Status StreamStore::Stop(ObjectID const stream_id, bool failed) {
       stream->reader_ = boost::none;
     } else if (stream->drained) {
       VINEYARD_SUPPRESS(
-          stream->reader_.get()(Status::StreamFailed(), InvalidObjectID()));
+          stream->reader_.get()(Status::StreamDrained(), InvalidObjectID()));
       stream->reader_ = boost::none;
     } else {
       RETURN_ON_ASSERT(false, "Impossible!");

@@ -16,39 +16,12 @@
 #
 
 include("${CMAKE_CURRENT_LIST_DIR}/DetermineImplicitIncludes.cmake")
-determine_implicit_includes(CXX CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-
-macro(find_python_executable)
-  if(NOT DEFINED PYTHON_EXECUTABLE)
-    if(DEFINED ENV{VIRTUAL_ENV})
-      find_program(
-        PYTHON_EXECUTABLE python
-        PATHS "$ENV{VIRTUAL_ENV}" "$ENV{VIRTUAL_ENV}/bin"
-        NO_DEFAULT_PATH)
-    elseif(DEFINED ENV{CONDA_PREFIX})
-      find_program(
-        PYTHON_EXECUTABLE python
-        PATHS "$ENV{CONDA_PREFIX}" "$ENV{CONDA_PREFIX}/bin"
-        NO_DEFAULT_PATH)
-    elseif(DEFINED ENV{pythonLocation})
-      find_program(
-        PYTHON_EXECUTABLE python
-        PATHS "$ENV{pythonLocation}" "$ENV{pythonLocation}/bin"
-        NO_DEFAULT_PATH)
-    else()
-      set(PYBIND11_PYTHON_VERSION 3)
-      find_package(PythonInterp)
-    endif()
-    if(NOT PYTHON_EXECUTABLE)
-      message(FATAL_ERROR "Failed to find a valid python interpreter, try speicifying `PYTHON_EXECUTABLE` instead")
-    endif()
-  endif()
-endmacro()
+include("${CMAKE_CURRENT_LIST_DIR}/FindPythonExecutable.cmake")
 
 function(vineyard_generate)
   set(_options)
-  set(_singleargs LANGUAGE OUT_VAR VINEYARD_OUT_DIR CMAKE_BUILD_DIR)
-  set(_multiargs VINEYARD_MODULES SYSTEM_INCLUDE_DIRECTORIES INCLUDE_DIRECTORIES GENERATE_EXTENSIONS)
+  set(_singleargs LANGUAGE OUT_VAR CMAKE_BUILD_DIR VINEYARD_OUT_DIR)
+  set(_multiargs VINEYARD_MODULES SYSTEM_INCLUDE_DIRECTORIES INCLUDE_DIRECTORIES GENERATE_EXTENSIONS DEPENDS)
 
   cmake_parse_arguments(vineyard_generate "${_options}" "${_singleargs}" "${_multiargs}" "${ARGN}")
 
@@ -76,6 +49,7 @@ function(vineyard_generate)
   endif()
 
   if(NOT vineyard_generate_SYSTEM_INCLUDE_DIRECTORIES)
+    determine_implicit_includes(CXX CXX_IMPLICIT_INCLUDE_DIRECTORIES)
     set(vineyard_generate_SYSTEM_INCLUDE_DIRECTORIES ${CXX_IMPLICIT_INCLUDE_DIRECTORIES})
   endif()
 
@@ -103,13 +77,13 @@ function(vineyard_generate)
   endif()
 
   find_python_executable()
-  message(STATUS "Use Python executable: ${PYTHON_EXECUTABLE}")
 
   set(_generated_srcs_all)
   foreach(_vineyard_module ${vineyard_generate_VINEYARD_MODULES})
     get_filename_component(_abs_file ${_vineyard_module} ABSOLUTE)
     get_filename_component(_abs_dir ${_abs_file} DIRECTORY)
-    get_filename_component(_basename ${_vineyard_module} NAME_WE)
+    get_filename_component(_basename ${_vineyard_module} NAME_WLE)
+    get_filename_component(_baseext ${_vineyard_module} LAST_EXT)
     file(RELATIVE_PATH _rel_dir ${CMAKE_CURRENT_SOURCE_DIR} ${_abs_dir})
 
     set(_possible_rel_dir ${_rel_dir}/)
@@ -127,7 +101,7 @@ function(vineyard_generate)
               -m
               codegen
               --dump-dependencies "True"
-              --root-directory "${CMAKE_CURRENT_SOURCE_DIR}"
+              --root-directory "${PROJECT_SOURCE_DIR}"
               --system-includes "${vineyard_generate_SYSTEM_INCLUDE_DIRECTORIES}"
               --includes "${vineyard_generate_INCLUDE_DIRECTORIES}"
               --build-directory "${vineyard_generate_CMAKE_BUILD_DIR}"
@@ -160,17 +134,18 @@ function(vineyard_generate)
       COMMAND "${PYTHON_EXECUTABLE}"
       ARGS -m
       ARGS codegen
-      ARGS --root-directory "${CMAKE_CURRENT_SOURCE_DIR}"
+      ARGS --root-directory "${PROJECT_SOURCE_DIR}"
       ARGS --system-includes "${vineyard_generate_SYSTEM_INCLUDE_DIRECTORIES}"
       ARGS --includes "${vineyard_generate_INCLUDE_DIRECTORIES}"
       ARGS --build-directory "${vineyard_generate_CMAKE_BUILD_DIR}"
       ARGS --source ${_abs_file}
       ARGS --target ${_generated_srcs}
-      ARGS --verbose
+      ARGS --langauge ${vineyard_generate_LANGUAGE}
       WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}/python/vineyard/core/"
       DEPENDS ${_codegen_scripts}
               ${_abs_file}
               ${_generated_srcs_depends_all}
+              ${vineyard_generate_DEPENDS}
       IMPLICIT_DEPENDS CXX ${_abs_file}
       COMMENT "Running ${vineyard_generate_LANGUAGE} vineyard module compiler on ${_vineyard_module}"
       VERBATIM)

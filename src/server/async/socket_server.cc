@@ -16,7 +16,9 @@ limitations under the License.
 #include "server/async/socket_server.h"
 
 #include <limits>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,7 +51,6 @@ bool SocketConnection::Stop() {
     // already stopped, or haven't started
     return false;
   }
-
   // do cleanup: clean up streams associated with this client
   for (auto stream_id : associated_streams_) {
     VINEYARD_SUPPRESS(server_ptr_->GetStreamStore()->Drop(stream_id));
@@ -278,6 +279,27 @@ bool SocketConnection::processMessage(const std::string& message_in) {
   case CommandType::DeleteSessionRequest: {
     return doDeleteSession(root);
   }
+  case CommandType::CreateBufferByPlasmaRequest: {
+    return doCreateBufferByPlasma(root);
+  }
+  case CommandType::GetBuffersByPlasmaRequest: {
+    return doGetBuffersByPlasma(root);
+  }
+  case CommandType::SealRequest: {
+    return doSealBlob(root);
+  }
+  case CommandType::PlasmaSealRequest: {
+    return doSealPlasmaBlob(root);
+  }
+  case CommandType::PlasmaReleaseRequest: {
+    return doPlasmaRelease(root);
+  }
+  case CommandType::PlasmaDelDataRequest: {
+    return doPlasmaDelData(root);
+  }
+  case CommandType::MoveBuffersOwnershipRequest: {
+    return doMoveBuffersOwnership(root);
+  }
   default: {
     LOG(ERROR) << "Got unexpected command: " << type;
     return false;
@@ -287,10 +309,13 @@ bool SocketConnection::processMessage(const std::string& message_in) {
 
 bool SocketConnection::doRegister(const json& root) {
   auto self(shared_from_this());
-  std::string client_version, message_out;
-  TRY_READ_REQUEST(ReadRegisterRequest, root, client_version);
+  std::string client_version, message_out, bulk_store_type;
+  TRY_READ_REQUEST(ReadRegisterRequest, root, client_version, bulk_store_type);
+  bool store_match = (bulk_store_type == "Any" ||
+                      bulk_store_type == server_ptr_->GetBulkStoreType());
   WriteRegisterReply(server_ptr_->IPCSocket(), server_ptr_->RPCEndpoint(),
-                     server_ptr_->instance_id(), message_out);
+                     server_ptr_->instance_id(), server_ptr_->session_id(),
+                     store_match, message_out);
   doWrite(message_out);
   return false;
 }
@@ -444,6 +469,7 @@ bool SocketConnection::doDropBuffer(const json& root) {
   auto self(shared_from_this());
   ObjectID object_id = InvalidObjectID();
   TRY_READ_REQUEST(ReadDropBufferRequest, root, object_id);
+  // Delete ignore reference count.
   auto status = server_ptr_->GetBulkStore()->Delete(object_id);
   std::string message_out;
   if (status.ok()) {
@@ -702,7 +728,7 @@ bool SocketConnection::doGetNextStreamChunk(const json& root) {
         if (status.ok()) {
           std::shared_ptr<Payload> object;
           RETURN_ON_ERROR(
-              self->server_ptr_->GetBulkStore()->Get(chunk, object));
+              self->server_ptr_->GetBulkStore()->GetUnchecked(chunk, object));
           WriteGetNextStreamChunkReply(object, message_out);
           int store_fd = object->store_fd;
           int data_size = object->data_size;
@@ -1006,11 +1032,20 @@ bool SocketConnection::doDebug(const json& root) {
 
 bool SocketConnection::doNewSession(const json& root) {
   auto self(shared_from_this());
-  std::string message_out, ipc_socket;
-  json result;
-  VINEYARD_CHECK_OK(server_ptr_->GetRunner()->CreateNewSession(ipc_socket));
-  WriteNewSessionReply(message_out, ipc_socket);
-  this->doWrite(message_out);
+  std::string bulk_store_type;
+  TRY_READ_REQUEST(ReadNewSessionRequest, root, bulk_store_type);
+  VINEYARD_CHECK_OK(server_ptr_->GetRunner()->CreateNewSession(
+      bulk_store_type,
+      [self](Status const& status, std::string const& ipc_socket) {
+        std::string message_out;
+        if (status.ok()) {
+          WriteNewSessionReply(message_out, ipc_socket);
+        } else {
+          WriteErrorReply(status, message_out);
+        }
+        self->doWrite(message_out);
+        return Status::OK();
+      }));
   return false;
 }
 
@@ -1022,6 +1057,158 @@ bool SocketConnection::doDeleteSession(const json& root) {
   return true;
 }
 
+bool SocketConnection::doCreateBufferByPlasma(json const& root) {
+  auto self(shared_from_this());
+  PlasmaID plasma_id;
+  ObjectID object_id = InvalidObjectID();
+  size_t size, plasma_size;
+  std::shared_ptr<PlasmaPayload> plasma_object;
+
+  TRY_READ_REQUEST(ReadCreateBufferByPlasmaRequest, root, plasma_id, size,
+                   plasma_size);
+
+  std::string message_out;
+  RESPONSE_ON_ERROR(server_ptr_->GetBulkStore<PlasmaID>()->Create(
+      size, plasma_size, plasma_id, object_id, plasma_object));
+  WriteCreateBufferByPlasmaReply(object_id, plasma_object, message_out);
+
+  int store_fd = plasma_object->store_fd;
+  int data_size = plasma_object->data_size;
+  this->doWrite(
+      message_out, [this, self, store_fd, data_size](const Status& status) {
+        if (data_size > 0 &&
+            self->used_fds_.find(store_fd) == self->used_fds_.end()) {
+          self->used_fds_.emplace(store_fd);
+          send_fd(self->nativeHandle(), store_fd);
+        }
+        LOG_SUMMARY("instances_memory_usage_bytes", server_ptr_->instance_id(),
+                    server_ptr_->GetBulkStore<PlasmaID>()->Footprint());
+        return Status::OK();
+      });
+  return false;
+}
+
+bool SocketConnection::doGetBuffersByPlasma(json const& root) {
+  auto self(shared_from_this());
+  std::vector<PlasmaID> plasma_ids;
+  std::vector<std::shared_ptr<PlasmaPayload>> plasma_objects;
+  std::string message_out;
+
+  TRY_READ_REQUEST(ReadGetBuffersByPlasmaRequest, root, plasma_ids);
+  RESPONSE_ON_ERROR(
+      server_ptr_->GetBulkStore<PlasmaID>()->Get(plasma_ids, plasma_objects));
+  WriteGetBuffersByPlasmaReply(plasma_objects, message_out);
+
+  /* NOTE: Here we send the file descriptor after the objects.
+   *       We are using sendmsg to send the file descriptor
+   *       which is a sync method. In theory, this might cause
+   *       the server to block, but currently this seems to be
+   *       the only method that are widely used in practice, e.g.,
+   *       boost and Plasma, and actually the file descriptor is
+   *       a very short message.
+   *
+   *       We will examine other methods later, such as using
+   *       explicit file descritors.
+   */
+  this->doWrite(message_out, [self, plasma_objects](const Status& status) {
+    for (auto object : plasma_objects) {
+      int store_fd = object->store_fd;
+      int data_size = object->data_size;
+      if (data_size > 0 &&
+          self->used_fds_.find(store_fd) == self->used_fds_.end()) {
+        self->used_fds_.emplace(store_fd);
+        send_fd(self->nativeHandle(), store_fd);
+      }
+    }
+    return Status::OK();
+  });
+  return false;
+}
+
+bool SocketConnection::doSealBlob(json const& root) {
+  auto self(shared_from_this());
+  ObjectID id;
+  TRY_READ_REQUEST(ReadSealRequest, root, id);
+  RESPONSE_ON_ERROR(server_ptr_->GetBulkStore()->Seal(id));
+  std::string message_out;
+  WriteSealReply(message_out);
+  this->doWrite(message_out);
+  return false;
+}
+
+bool SocketConnection::doSealPlasmaBlob(json const& root) {
+  auto self(shared_from_this());
+  PlasmaID id;
+  TRY_READ_REQUEST(ReadPlasmaSealRequest, root, id);
+  RESPONSE_ON_ERROR(server_ptr_->GetBulkStore<PlasmaID>()->Seal(id));
+  std::string message_out;
+  WriteSealReply(message_out);
+  this->doWrite(message_out);
+  return false;
+}
+
+bool SocketConnection::doPlasmaRelease(json const& root) {
+  auto self(shared_from_this());
+  PlasmaID id;
+  TRY_READ_REQUEST(ReadPlasmaReleaseRequest, root, id);
+  RESPONSE_ON_ERROR(
+      server_ptr_->GetBulkStore<PlasmaID>()->Release(id, getConnId()));
+  std::string message_out;
+  WritePlasmaReleaseReply(message_out);
+  this->doWrite(message_out);
+  return false;
+}
+
+bool SocketConnection::doPlasmaDelData(json const& root) {
+  auto self(shared_from_this());
+  PlasmaID id;
+  TRY_READ_REQUEST(ReadPlasmaDelDataRequest, root, id);
+
+  /// Plasma Data are not composable, so we do not have to wrestle with meta.
+  RESPONSE_ON_ERROR(server_ptr_->GetBulkStore<PlasmaID>()->Delete(id));
+
+  std::string message_out;
+  WritePlasmaDelDataReply(message_out);
+  this->doWrite(message_out);
+  return false;
+}
+
+bool SocketConnection::doMoveBuffersOwnership(json const& root) {
+  auto self(shared_from_this());
+  std::map<ObjectID, ObjectID> id_to_id;
+  std::map<PlasmaID, ObjectID> pid_to_id;
+  std::map<ObjectID, PlasmaID> id_to_pid;
+  std::map<PlasmaID, PlasmaID> pid_to_pid;
+  SessionID session_id;
+  TRY_READ_REQUEST(ReadMoveBuffersOwnershipRequest, root, id_to_id, pid_to_id,
+                   id_to_pid, pid_to_pid, session_id);
+  if (session_id == server_ptr_->session_id()) {
+    return false;
+  }
+
+  vs_ptr_t source_session;
+  RESPONSE_ON_ERROR(server_ptr_->GetRunner()->Get(session_id, source_session));
+
+  if (source_session->GetBulkStoreType() == "Normal") {
+    if (server_ptr_->GetBulkStoreType() == "Normal") {
+      RESPONSE_ON_ERROR(MoveBuffers(id_to_id, source_session));
+    } else {
+      RESPONSE_ON_ERROR(MoveBuffers(id_to_pid, source_session));
+    }
+  } else {
+    if (server_ptr_->GetBulkStoreType() == "Normal") {
+      RESPONSE_ON_ERROR(MoveBuffers(pid_to_id, source_session));
+    } else {
+      RESPONSE_ON_ERROR(MoveBuffers(pid_to_pid, source_session));
+    }
+  }
+
+  std::string message_out;
+  WriteMoveBuffersOwnershipReply(message_out);
+  this->doWrite(message_out);
+  return false;
+}
+
 void SocketConnection::doWrite(const std::string& buf) {
   std::string to_send;
   size_t length = buf.size();
@@ -1030,11 +1217,7 @@ void SocketConnection::doWrite(const std::string& buf) {
   memcpy(ptr, &length, sizeof(size_t));
   ptr += sizeof(size_t);
   memcpy(ptr, buf.data(), length);
-  {
-    std::lock_guard<std::recursive_mutex> scoped_lock(write_msgs_mutex_);
-    write_msgs_.push_back(std::move(to_send));
-  }
-  doAsyncWrite();
+  doAsyncWrite(std::move(to_send));
 }
 
 void SocketConnection::doWrite(const std::string& buf, callback_t<> callback) {
@@ -1045,19 +1228,11 @@ void SocketConnection::doWrite(const std::string& buf, callback_t<> callback) {
   memcpy(ptr, &length, sizeof(size_t));
   ptr += sizeof(size_t);
   memcpy(ptr, buf.data(), length);
-  {
-    std::lock_guard<std::recursive_mutex> scoped_lock(write_msgs_mutex_);
-    write_msgs_.push_back(std::move(to_send));
-  }
-  doAsyncWrite(callback);
+  doAsyncWrite(std::move(to_send), callback);
 }
 
 void SocketConnection::doWrite(std::string&& buf) {
-  {
-    std::lock_guard<std::recursive_mutex> scoped_lock(write_msgs_mutex_);
-    write_msgs_.push_back(std::move(buf));
-  }
-  doAsyncWrite();
+  doAsyncWrite(std::move(buf));
 }
 
 void SocketConnection::doStop() {
@@ -1067,55 +1242,32 @@ void SocketConnection::doStop() {
   }
 }
 
-void SocketConnection::doAsyncWrite() {
-  std::shared_ptr<std::string> payload = nullptr;
-  {
-    std::lock_guard<std::recursive_mutex> scoped_lock(write_msgs_mutex_);
-    if (!write_msgs_.empty()) {
-      payload.reset(new std::string());
-      payload->swap(write_msgs_.front());
-      write_msgs_.pop_front();
-    }
-  }
-  if (payload == nullptr) {
-    return;
-  }
+void SocketConnection::doAsyncWrite(std::string&& buf) {
+  std::shared_ptr<std::string> payload =
+      std::make_shared<std::string>(std::move(buf));
   auto self(shared_from_this());
   asio::async_write(
       socket_, boost::asio::buffer(payload->data(), payload->length()),
       [this, self, payload](boost::system::error_code ec, std::size_t) {
-        if (!ec) {
-          doAsyncWrite();
-        } else {
+        if (ec) {
           doStop();
         }
       });
 }
 
-void SocketConnection::doAsyncWrite(callback_t<> callback) {
-  std::shared_ptr<std::string> payload = nullptr;
-  {
-    std::lock_guard<std::recursive_mutex> scoped_lock(write_msgs_mutex_);
-    if (!write_msgs_.empty()) {
-      payload.reset(new std::string());
-      payload->swap(write_msgs_.front());
-      write_msgs_.pop_front();
-    }
-  }
-  if (payload == nullptr) {
-    auto status = callback(Status::OK());
-    if (!status.ok()) {
-      doStop();
-    }
-    return;
-  }
+void SocketConnection::doAsyncWrite(std::string&& buf, callback_t<> callback) {
+  std::shared_ptr<std::string> payload =
+      std::make_shared<std::string>(std::move(buf));
   auto self(shared_from_this());
   asio::async_write(socket_,
                     boost::asio::buffer(payload->data(), payload->length()),
                     [this, self, payload, callback](
                         boost::system::error_code ec, std::size_t) {
                       if (!ec) {
-                        doAsyncWrite(callback);
+                        auto status = callback(Status::OK());
+                        if (!status.ok()) {
+                          doStop();
+                        }
                       } else {
                         doStop();
                       }
@@ -1157,7 +1309,7 @@ void SocketServer::RemoveConnection(int conn_id) {
     }
 
     if (AliveConnections() == 0 && closable_.load()) {
-      VINEYARD_CHECK_OK(vs_ptr_->GetRunner()->Delete(vs_ptr_->GetSessionId()));
+      VINEYARD_CHECK_OK(vs_ptr_->GetRunner()->Delete(vs_ptr_->session_id()));
     }
   }
 }
@@ -1173,7 +1325,7 @@ void SocketServer::CloseConnection(int conn_id) {
   }
 
   if (AliveConnections() == 0 && closable_.load()) {
-    VINEYARD_CHECK_OK(vs_ptr_->GetRunner()->Delete(vs_ptr_->GetSessionId()));
+    VINEYARD_CHECK_OK(vs_ptr_->GetRunner()->Delete(vs_ptr_->session_id()));
   }
 }
 

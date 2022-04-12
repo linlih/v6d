@@ -31,13 +31,30 @@ def codegen(
     language,
     source,
     target=None,
+    package=None,
     system_includes=None,
     includes=None,
     extra_flags=None,
     build_directory=None,
     delayed=True,
     verbose=False,
+    **kwargs,
 ):
+    if language == 'java':
+        javagen(
+            root_directory,
+            source,
+            target,
+            package,
+            system_includes,
+            includes,
+            extra_flags,
+            build_directory,
+            verbose,
+            **kwargs,
+        )
+        return
+
     content, to_reflect, _, _ = parse_module(
         root_directory=root_directory,
         source=source,
@@ -52,8 +69,6 @@ def codegen(
     )
     if language == 'cpp':
         cppgen(root_directory, content, to_reflect, source, target, verbose)
-    elif language == 'java':
-        javagen(root_directory, content, to_reflect, source, target, verbose)
     elif language == 'python':
         pythongen(root_directory, content, to_reflect, source, target, verbose)
     else:
@@ -115,8 +130,43 @@ def parse_sys_args():
         '--build-directory',
         type=str,
         default=None,
-        help='Build directory that contains compilation database'
+        help='Build directory that contains compilation database '
         '(compile_commands.json)',
+    )
+    arg_parser.add_argument(
+        '-p',
+        '--package',
+        type=str,
+        default=None,
+        help='Package directory for Java/Python bindings',
+    )
+    arg_parser.add_argument(
+        '-pkg',
+        '--package-name',
+        type=str,
+        default=None,
+        help="Package name for Java/Python bindings",
+    )
+    arg_parser.add_argument(
+        '-lib',
+        '--ffilibrary-name',
+        type=str,
+        default=None,
+        help="FFI library name for Java/Python bindings",
+    )
+    arg_parser.add_argument(
+        '-e',
+        '--excludes',
+        type=str,
+        default=None,
+        help="Excluded declarations for Java/Python bindings",
+    )
+    arg_parser.add_argument(
+        '-fwd',
+        '--forwards',
+        type=str,
+        default=None,
+        help="Forward declrations for Java/Python bindings",
     )
     arg_parser.add_argument(
         '-f',
@@ -127,12 +177,12 @@ def parse_sys_args():
         help='Extra flags that will be passed to libclang',
     )
     arg_parser.add_argument(
+        '--delayed', action='store_true', help='Delayed the template parsing'
+    )
+    arg_parser.add_argument(
         '-v',
         '--verbose',
-        type=lambda x: bool(strtobool(x)),
-        nargs='?',
-        const=True,
-        default=False,
+        action='store_true',
         help='Run codegen script with verbose output',
     )
     return arg_parser.parse_args()
@@ -149,6 +199,7 @@ def main():
             args.includes,
             args.extra_flags,
             args.build_directory,
+            args.delayed,
             args.verbose,
         )
     else:
@@ -157,11 +208,17 @@ def main():
             args.langauge,
             args.source,
             args.target,
+            args.package,
             args.system_includes,
             args.includes,
             args.extra_flags,
             args.build_directory,
+            args.delayed,
             args.verbose,
+            package_name=args.package_name,
+            ffilibrary_name=args.ffilibrary_name,
+            excludes=args.excludes,
+            forwards=args.forwards,
         )
 
 

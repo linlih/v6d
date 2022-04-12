@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.3)
 
 set(VINEYARD_MAJOR_VERSION 0)
 set(VINEYARD_MINOR_VERSION 3)
-set(VINEYARD_PATCH_VERSION 19)
+set(VINEYARD_PATCH_VERSION 21)
 set(VINEYARD_VERSION ${VINEYARD_MAJOR_VERSION}.${VINEYARD_MINOR_VERSION}.${VINEYARD_PATCH_VERSION})
 
 message(STATUS "Configuring and building vineyard version '${VINEYARD_VERSION}'.")
@@ -28,6 +28,8 @@ option(BUILD_VINEYARD_SERVER "Build vineyard's server" ON)
 option(BUILD_VINEYARD_CLIENT "Build vineyard's client" ON)
 option(BUILD_VINEYARD_PYTHON_BINDINGS "Build vineyard's python bindings" ON)
 option(BUILD_VINEYARD_PYPI_PACKAGES "Build vineyard's python bindings" OFF)
+
+option(BUILD_VINEYARD_JAVA "Build vineyard's java SDK" OFF)
 
 option(BUILD_VINEYARD_BASIC "Build vineyard's basic data structures" ON)
 option(BUILD_VINEYARD_IO "Enable vineyard's IOAdaptor support" ON)
@@ -102,7 +104,7 @@ if(APPLE)
     # fortunately, we just need to take care `lib` on Mac.
     set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
 else()
-    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/lib64")
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/lib64:${CMAKE_INSTALL_PREFIX}/lib/x86_64-linux-gnu")
 endif()
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
@@ -397,6 +399,7 @@ endmacro()
 
 macro(target_enable_sanitizer target visibility)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND USE_ASAN)
+        message(STATUS "Vineyardd will be bulit with -fsanitize=address")
         target_compile_options(${target} ${visibility} -fsanitize=address)
         target_add_link_options(${target} ${visibility} OPTIONS -fsanitize=address)
     endif()
@@ -455,6 +458,13 @@ if(BUILD_VINEYARD_MALLOC)
     set(BUILD_VINEYARD_CLIENT ON)
 endif()
 
+add_custom_target(vineyard_tests)
+add_custom_target(vineyard_codegen)
+add_custom_target(vineyard_codegen_java)
+
+include("cmake/GenerateVineyard.cmake")
+include("cmake/GenerateVineyardJava.cmake")
+
 # build vineyardd
 if(BUILD_VINEYARD_SERVER)
     find_openssl_libraries(REQUIRED)
@@ -502,6 +512,24 @@ if(BUILD_VINEYARD_SERVER)
         target_compile_options(vineyardd PRIVATE -DWITH_JEMALLOC)
     else()
         message(FATAL "The allocator '${WITH_ALLOCATOR}' is not supported")
+    endif()
+
+    file(GLOB_RECURSE VINEYARD_CLIENT_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                                              "client/*.h")
+    if(BUILD_VINEYARD_JAVA AND VINEYARD_CLIENT_HEADERS)
+        vineyard_generate_java(
+            OUT_VAR VINEYARD_JAVA_GENERATES
+            VINEYARD_MODULES ${VINEYARD_CLIENT_HEADERS}
+        )
+    else()
+        set(VINEYARD_JAVA_GENERATES)
+    endif()
+    add_custom_target(vineyard_client_gen_java
+        DEPENDS ${VINEYARD_JAVA_GENERATES}
+        COMMENT "Running java code generation for vineyard_client."
+    )
+    if(VINEYARD_JAVA_GENERATES)
+        add_dependencies(vineyard_codegen_java vineyard_client_gen_java)
     endif()
 endif()
 
@@ -574,8 +602,6 @@ if(BUILD_VINEYARD_CLIENT)
     )
 endif()
 
-include("cmake/GenerateVineyard.cmake")
-
 if(BUILD_VINEYARD_PYTHON_BINDINGS)
     set(PYBIND11_PYTHON_VERSION 3)
     add_subdirectory(thirdparty/pybind11)
@@ -612,9 +638,6 @@ if(BUILD_VINEYARD_PYTHON_BINDINGS)
         COMMENT "Copying python extensions."
         VERBATIM)
 endif()
-
-add_custom_target(vineyard_tests)
-add_custom_target(vineyard_codegen)
 
 # add sub_directories
 if(BUILD_VINEYARD_BASIC)
@@ -717,7 +740,7 @@ add_custom_target(vineyard_cpplint
         VERBATIM)
 
 add_custom_target(python_install
-        COMMAND python3 setup.py install
+        COMMAND python3 -m pip install --user .
         COMMAND python3 setup_airflow.py install
         COMMAND python3 setup_ml.py install
         COMMAND python3 setup_dask.py install
@@ -758,7 +781,9 @@ install(FILES "${PROJECT_BINARY_DIR}/vineyard-config.cmake"
               "${PROJECT_SOURCE_DIR}/cmake/FindGperftools.cmake"
               "${PROJECT_SOURCE_DIR}/cmake/FindLibUnwind.cmake"
               "${PROJECT_SOURCE_DIR}/cmake/FindRdkafka.cmake"
+              "${PROJECT_SOURCE_DIR}/cmake/FindPythonExecutable.cmake"
               "${PROJECT_SOURCE_DIR}/cmake/GenerateVineyard.cmake"
+              "${PROJECT_SOURCE_DIR}/cmake/GenerateVineyardJava.cmake"
               "${PROJECT_SOURCE_DIR}/cmake/DetermineImplicitIncludes.cmake"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/vineyard
 )

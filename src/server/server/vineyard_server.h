@@ -29,6 +29,7 @@ limitations under the License.
 #include "common/util/callback.h"
 #include "common/util/json.h"
 #include "common/util/status.h"
+#include "common/util/uuid.h"
 
 #include "server/memory/memory.h"
 #include "server/memory/stream_store.h"
@@ -73,18 +74,23 @@ class DeferredReq {
  */
 class VineyardServer : public std::enable_shared_from_this<VineyardServer> {
  public:
-  explicit VineyardServer(const json& spec, const SessionId& session_id,
+  explicit VineyardServer(const json& spec, const SessionID& session_id,
                           std::shared_ptr<VineyardRunner> runner,
+#if BOOST_VERSION >= 106600
                           asio::io_context& context,
-                          asio::io_context& meta_context);
-  Status Serve();
+                          asio::io_context& meta_context,
+#else
+                          asio::io_service& context,
+                          asio::io_service& meta_context,
+#endif
+                          callback_t<std::string const&> callback);
+  Status Serve(std::string const& bulk_store_type);
   Status Finalize();
   inline const json& GetSpec() { return spec_; }
   inline const std::string GetDeployment() {
     return spec_["deployment"].get_ref<std::string const&>();
   }
 
-  inline SessionId GetSessionId() const { return session_id_; }
 #if BOOST_VERSION >= 106600
   inline asio::io_context& GetContext() { return context_; }
   inline asio::io_context& GetMetaContext() { return meta_context_; }
@@ -92,7 +98,15 @@ class VineyardServer : public std::enable_shared_from_this<VineyardServer> {
   inline asio::io_service& GetContext() { return context_; }
   inline asio::io_service& GetMetaContext() { return meta_context_; }
 #endif
-  inline std::shared_ptr<BulkStore> GetBulkStore() { return bulk_store_; }
+  inline std::string GetBulkStoreType() { return bulk_store_type_; }
+
+  template <typename T = ObjectID>
+  auto GetBulkStore() {
+    return static_if<std::is_same<T, ObjectID>{}>(
+        [this]() { return bulk_store_; },
+        [this]() { return plasma_bulk_store_; })();
+  }
+
   inline std::shared_ptr<StreamStore> GetStreamStore() { return stream_store_; }
   inline std::shared_ptr<VineyardRunner> GetRunner() { return runner_; }
 
@@ -162,6 +176,7 @@ class VineyardServer : public std::enable_shared_from_this<VineyardServer> {
 
   Status ProcessDeferred(const json& meta);
 
+  inline SessionID session_id() const { return session_id_; }
   inline InstanceID instance_id() { return instance_id_; }
   inline std::string instance_name() { return instance_name_; }
   inline void set_instance_id(InstanceID id) {
@@ -191,7 +206,7 @@ class VineyardServer : public std::enable_shared_from_this<VineyardServer> {
 
  private:
   json spec_;
-  SessionId session_id_;
+  SessionID session_id_;
 
 #if BOOST_VERSION >= 106600
   asio::io_context& context_;
@@ -200,6 +215,7 @@ class VineyardServer : public std::enable_shared_from_this<VineyardServer> {
   asio::io_service& context_;
   asio::io_service& meta_context_;
 #endif
+  callback_t<std::string const&> callback_;
 
   std::shared_ptr<IMetaService> meta_service_ptr_;
   std::unique_ptr<IPCServer> ipc_server_ptr_;
@@ -207,7 +223,9 @@ class VineyardServer : public std::enable_shared_from_this<VineyardServer> {
 
   std::list<DeferredReq> deferred_;
 
+  std::string bulk_store_type_;
   std::shared_ptr<BulkStore> bulk_store_;
+  std::shared_ptr<PlasmaBulkStore> plasma_bulk_store_;
   std::shared_ptr<StreamStore> stream_store_;
   std::shared_ptr<VineyardRunner> runner_;
 

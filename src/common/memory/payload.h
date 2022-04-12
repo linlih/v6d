@@ -23,6 +23,8 @@ limitations under the License.
 
 namespace vineyard {
 
+struct PlasmaPayload;
+
 struct Payload {
   ObjectID object_id;
   int store_fd;
@@ -31,6 +33,8 @@ struct Payload {
   int64_t data_size;
   int64_t map_size;
   uint8_t* pointer;
+  bool is_sealed;
+  bool is_owner;
 
   Payload()
       : object_id(EmptyBlobID()),
@@ -39,7 +43,9 @@ struct Payload {
         data_offset(0),
         data_size(0),
         map_size(0),
-        pointer(nullptr) {}
+        pointer(nullptr),
+        is_sealed(0),
+        is_owner(1) {}
 
   Payload(ObjectID object_id, int64_t size, uint8_t* ptr, int fd, int64_t msize,
           ptrdiff_t offset)
@@ -49,7 +55,9 @@ struct Payload {
         data_offset(offset),
         data_size(size),
         map_size(msize),
-        pointer(ptr) {}
+        pointer(ptr),
+        is_sealed(0),
+        is_owner(1) {}
 
   Payload(ObjectID object_id, int64_t size, uint8_t* ptr, int fd, int arena_fd,
           int64_t msize, ptrdiff_t offset)
@@ -59,7 +67,9 @@ struct Payload {
         data_offset(offset),
         data_size(size),
         map_size(msize),
-        pointer(ptr) {}
+        pointer(ptr),
+        is_sealed(0),
+        is_owner(1) {}
 
   static std::shared_ptr<Payload> MakeEmpty() {
     static std::shared_ptr<Payload> payload = std::make_shared<Payload>();
@@ -72,6 +82,16 @@ struct Payload {
             (data_size == other.data_size));
   }
 
+  inline void Reset() { is_sealed = false, is_owner = true; }
+
+  inline void MarkAsSealed() { is_sealed = true; }
+
+  inline bool IsSealed() { return is_sealed; }
+
+  inline void RemoveOwner() { is_owner = false; }
+
+  inline bool IsOwner() { return is_owner; }
+
   json ToJSON() const;
 
   void ToJSON(json& tree) const;
@@ -82,6 +102,85 @@ struct Payload {
    * @brief A static variant for `FromJSON`.
    */
   static Payload FromJSON1(const json& tree);
+};
+
+struct PlasmaPayload : public Payload {
+  PlasmaID plasma_id;
+  int64_t plasma_size;
+  int64_t ref_cnt;
+
+  PlasmaPayload() : Payload(), plasma_id(), plasma_size(0), ref_cnt(0) {}
+
+  PlasmaPayload(PlasmaID plasma_id, ObjectID object_id, int64_t plasma_size,
+                int64_t size, uint8_t* ptr, int fd, int64_t msize,
+                ptrdiff_t offset)
+      : Payload(object_id, size, ptr, fd, msize, offset),
+        plasma_id(plasma_id),
+        plasma_size(plasma_size),
+        ref_cnt(0) {}
+
+  PlasmaPayload(PlasmaID plasma_id, ObjectID object_id, int64_t plasma_size,
+                int64_t size, uint8_t* ptr, int fd, int arena_fd, int64_t msize,
+                ptrdiff_t offset)
+      : Payload(object_id, size, ptr, fd, arena_fd, msize, offset),
+        plasma_id(plasma_id),
+        plasma_size(plasma_size),
+        ref_cnt(0) {}
+
+  PlasmaPayload(PlasmaID plasma_id, int64_t size, uint8_t* ptr, int fd,
+                int64_t msize, ptrdiff_t offset)
+      : Payload(EmptyBlobID(), size, ptr, fd, msize, offset),
+        plasma_id(plasma_id),
+        plasma_size(0),
+        ref_cnt(0) {}
+
+  explicit PlasmaPayload(Payload _p)
+      : Payload(_p),
+        plasma_id(PlasmaIDFromString(ObjectIDToString(_p.object_id))),
+        plasma_size(0),
+        ref_cnt(0) {}
+
+  static std::shared_ptr<PlasmaPayload> MakeEmpty() {
+    static std::shared_ptr<PlasmaPayload> payload =
+        std::make_shared<PlasmaPayload>();
+    return payload;
+  }
+
+  bool operator==(const PlasmaPayload& other) const {
+    return ((object_id == other.object_id) && (store_fd == other.store_fd) &&
+            (data_offset == other.data_offset) &&
+            (plasma_size == other.plasma_size) &&
+            (plasma_id == other.plasma_id) && (data_size == other.data_size));
+  }
+
+  Payload ToNormalPayload() const {
+    return Payload(object_id, data_size, pointer, store_fd, arena_fd, map_size,
+                   data_offset);
+  }
+
+  json ToJSON() const;
+
+  void ToJSON(json& tree) const;
+
+  void FromJSON(const json& tree);
+
+  /**
+   * @brief A static variant for `FromJSON`.
+   */
+  static PlasmaPayload FromJSON1(const json& tree);
+};
+
+template <typename T>
+struct ID_traits {};
+
+template <>
+struct ID_traits<ObjectID> {
+  typedef Payload P;
+};
+
+template <>
+struct ID_traits<PlasmaID> {
+  typedef PlasmaPayload P;
 };
 
 }  // namespace vineyard

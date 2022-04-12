@@ -6,8 +6,13 @@
 .vscode
 .idea
 .DS_store
+.cache/
+.ossutil_checkpoint/
 compile_commands.json
 cmake-build-debug
+
+# core dump
+core
 
 # for python packaging
 /dist/
@@ -20,6 +25,7 @@ cmake-build-debug
 
 # generated files
 *.vineyard.h
+*.java.touch
 
 # etcd data directory during testing
 default.etcd/
@@ -35,3 +41,9 @@ default.etcd/
 
 # go vendor
 /**/vendor/
+
+# Rust build
+/**/target/
+
+# Java JVM crash logs
+hs_err_pid*.log

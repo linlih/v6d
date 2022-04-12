@@ -18,8 +18,10 @@ limitations under the License.
 
 #include <atomic>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -27,6 +29,7 @@ limitations under the License.
 
 #include "boost/asio.hpp"
 
+#include "common/util/logging.h"
 #include "common/util/protocols.h"
 #include "server/server/vineyard_server.h"
 
@@ -56,82 +59,122 @@ class SocketConnection : public std::enable_shared_from_this<SocketConnection> {
   bool Stop();
 
  protected:
-  bool doRegister(const json& root);
+  bool doRegister(json const& root);
 
-  bool doGetBuffers(const json& root);
+  bool doGetBuffers(json const& root);
 
   /**
    * @brief doGetRemoteBuffers differs from doGetRemoteBuffers, that the
    * content of blob is in the response body, rather than via memory sharing.
    */
-  bool doGetRemoteBuffers(const json& root);
+  bool doGetRemoteBuffers(json const& root);
 
-  bool doCreateBuffer(const json& root);
+  bool doCreateBuffer(json const& root);
 
   /**
    * @brief doCreateBuffer differs from doCreateRemoteBuffer, that the content
    * of blob is in the request body, rather than via memory sharing.
    */
-  bool doCreateRemoteBuffer(const json& root);
+  bool doCreateRemoteBuffer(json const& root);
 
-  bool doDropBuffer(const json& root);
+  bool doDropBuffer(json const& root);
 
-  bool doGetData(const json& root);
+  bool doGetData(json const& root);
 
-  bool doListData(const json& root);
+  bool doListData(json const& root);
 
-  bool doCreateData(const json& root);
+  bool doCreateData(json const& root);
 
-  bool doPersist(const json& root);
+  bool doPersist(json const& root);
 
-  bool doIfPersist(const json& root);
+  bool doIfPersist(json const& root);
 
-  bool doExists(const json& root);
+  bool doExists(json const& root);
 
-  bool doShallowCopy(const json& root);
+  bool doShallowCopy(json const& root);
 
-  bool doDeepCopy(const json& root);
+  bool doDeepCopy(json const& root);
 
-  bool doDelData(const json& root);
+  bool doDelData(json const& root);
 
-  bool doCreateStream(const json& root);
+  bool doCreateStream(json const& root);
 
-  bool doOpenStream(const json& root);
+  bool doOpenStream(json const& root);
 
-  bool doGetNextStreamChunk(const json& root);
+  bool doGetNextStreamChunk(json const& root);
 
-  bool doPushNextStreamChunk(const json& root);
+  bool doPushNextStreamChunk(json const& root);
 
-  bool doPullNextStreamChunk(const json& root);
+  bool doPullNextStreamChunk(json const& root);
 
-  bool doStopStream(const json& root);
+  bool doStopStream(json const& root);
 
-  bool doPutName(const json& root);
+  bool doPutName(json const& root);
 
-  bool doGetName(const json& root);
+  bool doGetName(json const& root);
 
-  bool doDropName(const json& root);
+  bool doDropName(json const& root);
 
-  bool doMigrateObject(const json& root);
+  bool doMigrateObject(json const& root);
 
-  bool doClusterMeta(const json& root);
+  bool doClusterMeta(json const& root);
 
-  bool doInstanceStatus(const json& root);
+  bool doInstanceStatus(json const& root);
 
-  bool doMakeArena(const json& root);
+  bool doMakeArena(json const& root);
 
-  bool doFinalizeArena(const json& root);
+  bool doFinalizeArena(json const& root);
 
-  bool doClear(const json& root);
+  bool doClear(json const& root);
 
-  bool doDebug(const json& root);
+  bool doDebug(json const& root);
 
-  bool doNewSession(const json& root);
+  bool doNewSession(json const& root);
 
-  bool doDeleteSession(const json& root);
+  bool doDeleteSession(json const& root);
+
+  bool doCreateBufferByPlasma(json const& root);
+
+  bool doGetBuffersByPlasma(json const& root);
+
+  bool doSealBlob(json const& root);
+
+  bool doSealPlasmaBlob(json const& root);
+
+  bool doPlasmaRelease(json const& root);
+
+  bool doPlasmaDelData(json const& root);
+
+  bool doMoveBuffersOwnership(json const& root);
+
+ protected:
+  template <typename FROM, typename TO>
+  Status MoveBuffers(std::map<FROM, TO> mapping, vs_ptr_t& source_session) {
+    std::set<FROM> ids;
+    for (auto const& item : mapping) {
+      ids.insert(item.first);
+    }
+
+    std::map<FROM, typename ID_traits<FROM>::P> successed_ids;
+    RETURN_ON_ERROR(source_session->GetBulkStore<FROM>()->RemoveOwnership(
+        ids, successed_ids));
+
+    std::map<TO, typename ID_traits<TO>::P> to_process_ids;
+    for (auto& item : successed_ids) {
+      typename ID_traits<TO>::P payload(item.second);
+      payload.Reset();
+      to_process_ids.emplace(mapping.at(item.first), payload);
+    }
+
+    RETURN_ON_ERROR(
+        server_ptr_->GetBulkStore<TO>()->MoveOwnership(to_process_ids));
+    return Status::OK();
+  }
 
  private:
   int nativeHandle() { return socket_.native_handle(); }
+
+  int getConnId() { return conn_id_; }
 
   /**
    * @brief Return should be exit after this message.
@@ -153,15 +196,15 @@ class SocketConnection : public std::enable_shared_from_this<SocketConnection> {
 
   /**
    * Being called when the encounter a socket error (in read/write), or by
-   * external "conn->Stop()".
+   * plasma "conn->Stop()".
    *
    * Just do some clean up and won't remove connecion from parent's pool.
    */
   void doStop();
 
-  void doAsyncWrite();
+  void doAsyncWrite(std::string&& buf);
 
-  void doAsyncWrite(callback_t<> callback);
+  void doAsyncWrite(std::string&& buf, callback_t<> callback);
 
   void sendBufferHelper(std::vector<std::shared_ptr<Payload>> const objects,
                         size_t index, boost::system::error_code const ec,
@@ -174,8 +217,6 @@ class SocketConnection : public std::enable_shared_from_this<SocketConnection> {
   std::atomic_bool running_;
 
   asio::streambuf buf_;
-  socket_message_queue_t write_msgs_;
-  std::recursive_mutex write_msgs_mutex_;  // protect the write_msgs
 
   std::unordered_set<int> used_fds_;
   // the associated reader of the stream
@@ -229,7 +270,8 @@ class SocketServer {
   size_t AliveConnections() const;
 
  protected:
-  std::atomic_bool stopped_;   // if the socket server being stopped.
+  std::atomic_bool stopped_;  // if the socket server being stopped.
+
   std::atomic_bool closable_;  // if client want to close the session,
   vs_ptr_t vs_ptr_;
   int next_conn_id_;
